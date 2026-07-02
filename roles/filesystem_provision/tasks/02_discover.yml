@@ -1,0 +1,27 @@
+---
+- name: Ensure lvm2 is installed
+  ansible.builtin.package:
+    name: lvm2
+    state: present
+
+- name: Gather existing volume groups
+  ansible.builtin.command:
+    cmd: vgs --reportformat json
+  register: vgs_output
+  changed_when: false
+
+- name: Gather existing block devices
+  ansible.builtin.command:
+    cmd: lsblk --json
+  register: lsblk_output
+  changed_when: false
+
+- name: Set available disk fact
+  ansible.builtin.set_fact:
+    available_disk: "{{ '/dev/' + (lsblk_output.stdout | from_json).blockdevices | selectattr('mountpoints', 'equalto', [none]) | map(attribute='name') | first }}"
+  when: disk_device is not defined or disk_device == none
+
+- name: Gather existing volume groups fact
+  ansible.builtin.set_fact:
+    existing_vgs: "{{ (vgs_output.stdout | from_json).report[0].vg }}"
+  when: vg_name is not defined or vg_name == none
