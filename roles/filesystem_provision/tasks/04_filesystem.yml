@@ -1,6 +1,6 @@
 ---
 - name: Create filesystem
-  ansible.posix.filesystem:
+  community.general.filesystem:
     fstype: "{{ fstype }}"
     dev: "/dev/{{ active_vg }}/{{ lv_name }}"
 
@@ -10,4 +10,3 @@
     src: "/dev/{{ active_vg }}/{{ lv_name }}"
     fstype: "{{ fstype }}"
     state: mounted
-
