@@ -1,38 +1,38 @@
-Role Name
-=========
+# filesystem_provision
 
-A brief description of the role goes here.
+Ansible role that provisions LVM-based filesystems on Linux VMs. Handles the full stack: PV → VG → LV → filesystem → mount → fstab.
 
-Requirements
-------------
+## What it does
 
-Any pre-requisites that may not be covered by Ansible itself or the role should be mentioned here. For instance, if the role uses the EC2 module, it may be a good idea to mention in this section that the boto package is required.
+- Discovers available unallocated disks automatically
+- Creates a new VG or extends an existing one based on current state
+- Creates a logical volume, formats it, mounts it, and adds a persistent fstab entry
+- Fails cleanly with human-readable messages when resources are insufficient
 
-Role Variables
---------------
+## Requirements
 
-A description of the settable variables for this role should go here, including any variables that are in defaults/main.yml, vars/main.yml, and any variables that can/should be set via parameters to the role. Any variables that are read from other roles and/or the global scope (ie. hostvars, group vars, etc.) should be mentioned here as well.
+ansible-galaxy collection install -r requirements.yml
 
-Dependencies
-------------
+## Variables
 
-A list of other roles hosted on Galaxy should go here, plus any details in regards to parameters that may need to be set for other roles, or variables that are used from other roles.
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| mount_point | yes | ~ | Where to mount e.g. /data/logs |
+| lv_size | yes | ~ | Size e.g. 5G |
+| lv_name | yes | ~ | LV name e.g. lv_logs |
+| fstype | no | ext4 | Filesystem type: ext4 or xfs |
+| vg_name | no | ~ | VG name - auto-generated if not supplied |
+| disk_device | no | ~ | Disk to use - auto-discovered if not supplied |
 
-Example Playbook
-----------------
+## Example
 
-Including an example of how to use your role (for instance, with variables passed in as parameters) is always nice for users too:
+ansible-playbook provision.yml -e "mount_point=/data/logs lv_name=lv_logs lv_size=4G"
 
-    - hosts: servers
-      roles:
-         - { role: username.rolename, x: 42 }
+## Tested on
 
-License
--------
+- Rocky Linux 10.2
+- Ubuntu 26.04 (control node)
 
-BSD
+## Author
 
-Author Information
-------------------
-
-An optional section for the role authors to include contact information, or a website (HTML is not allowed).
+Praveenraj

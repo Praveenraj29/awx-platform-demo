@@ -1,38 +1,40 @@
-Role Name
-=========
+# AWX Platform Demo
 
-A brief description of the role goes here.
+Self-service infrastructure provisioning platform — ServiceNow catalog → AWX → Ansible → VMware.
 
-Requirements
-------------
+## Project 1 — LVM Filesystem Provisioning (current)
 
-Any pre-requisites that may not be covered by Ansible itself or the role should be mentioned here. For instance, if the role uses the EC2 module, it may be a good idea to mention in this section that the boto package is required.
+Self-service storage provisioning via Ansible role. User requests a mount point and size — automation handles PV, VG, LV, filesystem, mount, and fstab.
 
-Role Variables
---------------
+## Architecture
 
-A description of the settable variables for this role should go here, including any variables that are in defaults/main.yml, vars/main.yml, and any variables that can/should be set via parameters to the role. Any variables that are read from other roles and/or the global scope (ie. hostvars, group vars, etc.) should be mentioned here as well.
+ServiceNow Catalog → AWX Job Template → Ansible Role → Target Linux VM
 
-Dependencies
-------------
+## Stack
 
-A list of other roles hosted on Galaxy should go here, plus any details in regards to parameters that may need to be set for other roles, or variables that are used from other roles.
+- Ansible Core 2.20
+- AWX (k3s-hosted)
+- Rocky Linux 10.2 target
+- Collections: community.general, ansible.posix, community.vmware
 
-Example Playbook
-----------------
+## Sprints
 
-Including an example of how to use your role (for instance, with variables passed in as parameters) is always nice for users too:
+| Sprint | Status |
+|---|---|
+| 1 — LVM provisioning role | Done |
+| 2 — AWX Job Template + Survey | In progress |
+| 3 — ServiceNow to AWX variables | Pending |
+| 4 — CMDB sync + dynamic VM dropdown | Pending |
+| 5 — Approval gate | Pending |
+| 6 — Closure loop + email | Pending |
 
-    - hosts: servers
-      roles:
-         - { role: username.rolename, x: 42 }
+## Roadmap
 
-License
--------
+- Project 2: HashiCorp Vault SSH CA — ephemeral credentials
+- Project 3: Self-maintaining AWX platform — GitOps EE builds and job template management
+- Project 4: Backstage + Keycloak — persona-aware developer portal
+- OpenShift Virtualization as parallel hypervisor target
 
-BSD
+## Author
 
-Author Information
-------------------
-
-An optional section for the role authors to include contact information, or a website (HTML is not allowed).
+Praveenraj — DevOps/Platform Engineering
