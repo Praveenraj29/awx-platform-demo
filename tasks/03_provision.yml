@@ -1,0 +1,31 @@
+---
+- name: Create PV and new VG
+  community.general.lvg:
+    pvs: "{{ disk_device if disk_device is not none else available_disk }}"
+    vg: "{{ vg_name if vg_name is not none else 'vg_data' }}"
+    state: present
+  when: existing_vgs | length == 0
+
+- name: Extend VG since VG is present
+  community.general.lvg:
+    pvs: "{{ disk_device if disk_device is not none else available_disk }}"
+    vg: "{{ (existing_vgs | rejectattr('vg_free', 'equalto', '0.00g') | list | first).vg_name }}"
+    state: present
+  when: existing_vgs | length > 0 
+
+- name: Set active VG name fact
+  ansible.builtin.set_fact:
+    active_vg: "{{ vg_name if vg_name is not none else 'vg_data' }}"
+  when: existing_vgs | length == 0
+
+- name: Set active VG name fact from existing
+  ansible.builtin.set_fact:
+    active_vg: "{{ (existing_vgs | rejectattr('vg_free', 'equalto', '0.00g') | list | first).vg_name }}"
+  when: existing_vgs | length > 0
+
+- name: Create logical volume
+  community.general.lvol:
+    vg: "{{ active_vg }}"
+    lv: "{{ lv_name }}"
+    size: "{{ lv_size }}"
+    state: present
