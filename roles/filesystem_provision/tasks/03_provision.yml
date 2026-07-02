@@ -6,12 +6,21 @@
     state: present
   when: existing_vgs | length == 0
 
+- name: Create PV on new disk before extending VG
+  ansible.builtin.command:
+    cmd: "pvcreate {{ disk_device if disk_device is not none else available_disk }}"
+  when: existing_vgs | length > 0
+  changed_when: true
+
 - name: Extend VG since VG is present
   community.general.lvg:
-    pvs: "{{ disk_device if disk_device is not none else available_disk }}"
+    pvs:
+      - "{{ (existing_vgs | rejectattr('vg_free', 'equalto', '0.00g') | list | first).pv_name }}"
+      - "{{ disk_device if disk_device is not none else available_disk }}"
     vg: "{{ (existing_vgs | rejectattr('vg_free', 'equalto', '0.00g') | list | first).vg_name }}"
     state: present
-  when: existing_vgs | length > 0 
+    remove_extra_pvs: false
+  when: existing_vgs | length > 0
 
 - name: Set active VG name fact
   ansible.builtin.set_fact:

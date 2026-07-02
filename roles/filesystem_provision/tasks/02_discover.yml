@@ -6,7 +6,7 @@
 
 - name: Gather existing volume groups
   ansible.builtin.command:
-    cmd: vgs --reportformat json
+    cmd: vgs --reportformat json -o vg_name,vg_free,pv_name
   register: vgs_output
   changed_when: false
 
@@ -16,10 +16,30 @@
   register: lsblk_output
   changed_when: false
 
+- name: Gather existing physical volumes
+  ansible.builtin.command:
+    cmd: pvs --reportformat json -o pv_name
+  register: pvs_output
+  changed_when: false
+
+- name: Set available disks list
+  ansible.builtin.set_fact:
+    available_disks: "{{ (lsblk_output.stdout | from_json).blockdevices | selectattr('mountpoints', 'equalto', [none]) | rejectattr('name', 'in', (pvs_output.stdout | from_json).report[0].pv | map(attribute='pv_name') | map('replace', '/dev/', '') | list) | list }}"
+  when: disk_device is not defined or disk_device == none
+
+- name: Fail if no unallocated disk available
+  ansible.builtin.fail:
+    msg: "No unallocated disks available and VG has insufficient free space. Please raise a storage request with the infrastructure team."
+  when:
+    - disk_device is not defined or disk_device == none
+    - available_disks | length == 0
+
 - name: Set available disk fact
   ansible.builtin.set_fact:
-    available_disk: "{{ '/dev/' + (lsblk_output.stdout | from_json).blockdevices | selectattr('mountpoints', 'equalto', [none]) | map(attribute='name') | first }}"
-  when: disk_device is not defined or disk_device == none
+    available_disk: "/dev/{{ available_disks | map(attribute='name') | first }}"
+  when:
+    - disk_device is not defined or disk_device == none
+    - available_disks | length > 0
 
 - name: Gather existing volume groups fact
   ansible.builtin.set_fact:

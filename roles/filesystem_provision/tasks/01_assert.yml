@@ -1,15 +1,15 @@
 ---
 - name: Assert mount_point is defined
   ansible.builtin.assert:
-    that: mount_point is defined and mount_point | length > 0
+    that: mount_point is defined and mount_point is not none and mount_point | length > 0
     fail_msg: "mount_point is required - please provide a mount point e.g. /data/logs"
 
 - name: Assert lv_size is defined
   ansible.builtin.assert:
-    that: lv_size is defined and lv_size | length > 0
+    that: lv_size is defined and lv_size is not none and lv_size | length > 0
     fail_msg: "lv_size is required - please provide a valid size like 10G or 20G"
 
 - name: Assert lv_name is defined
   ansible.builtin.assert:
-    that: lv_name is defined and lv_name | length > 0
+    that: lv_name is defined and lv_name is not none and lv_name | length > 0
     fail_msg: "lv_name is required - please provide a valid name like splunk, tmp, postgresql"
