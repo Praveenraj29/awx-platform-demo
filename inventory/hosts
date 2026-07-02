@@ -1,0 +1,2 @@
+[rocky]
+172.16.0.3 ansible_user=laborant
