@@ -22,7 +22,7 @@ ServiceNow Catalog → AWX Job Template → Ansible Role → Target Linux VM
 | Sprint | Status |
 |---|---|
 | 1 — LVM provisioning role | Done |
-| 2 — AWX Job Template + Survey | In progress |
+| 2 — AWX Job Template + Survey | Done |
 | 3 — ServiceNow to AWX variables | Pending |
 | 4 — CMDB sync + dynamic VM dropdown | Pending |
 | 5 — Approval gate | Pending |
