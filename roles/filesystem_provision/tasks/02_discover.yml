@@ -36,7 +36,7 @@
 
 - name: Set available disk fact
   ansible.builtin.set_fact:
-    available_disk: "/dev/{{ available_disks | map(attribute='name') | first }}"
+    available_disks: "{{ (lsblk_output.stdout | from_json).blockdevices | selectattr('type', 'equalto', 'disk') | rejectattr('children', 'defined') | rejectattr('name', 'in', (pvs_output.stdout | from_json).report[0].pv | map(attribute='pv_name') | map('replace', '/dev/', '') | list) | list }}"
   when:
     - disk_device is not defined or disk_device == none
     - available_disks | length > 0
