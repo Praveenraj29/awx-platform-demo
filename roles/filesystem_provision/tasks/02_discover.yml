@@ -24,7 +24,7 @@
 
 - name: Set available disks list
   ansible.builtin.set_fact:
-    available_disks: "{{ (lsblk_output.stdout | from_json).blockdevices | selectattr('mountpoints', 'equalto', [none]) | rejectattr('name', 'in', (pvs_output.stdout | from_json).report[0].pv | map(attribute='pv_name') | map('replace', '/dev/', '') | list) | list }}"
+    available_disks: "{{ (lsblk_output.stdout | from_json).blockdevices | selectattr('type', 'equalto', 'disk') | rejectattr('children', 'defined') | rejectattr('name', 'in', (pvs_output.stdout | from_json).report[0].pv | map(attribute='pv_name') | map('replace', '/dev/', '') | list) | list }}"
   when: disk_device is not defined or disk_device == none
 
 - name: Fail if no unallocated disk available
@@ -36,7 +36,7 @@
 
 - name: Set available disk fact
   ansible.builtin.set_fact:
-    available_disks: "{{ (lsblk_output.stdout | from_json).blockdevices | selectattr('type', 'equalto', 'disk') | rejectattr('children', 'defined') | rejectattr('name', 'in', (pvs_output.stdout | from_json).report[0].pv | map(attribute='pv_name') | map('replace', '/dev/', '') | list) | list }}"
+    available_disk: "/dev/{{ available_disks | map(attribute='name') | first }}"
   when:
     - disk_device is not defined or disk_device == none
     - available_disks | length > 0
