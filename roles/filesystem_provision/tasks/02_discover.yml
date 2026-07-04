@@ -27,12 +27,17 @@
     available_disks: "{{ (lsblk_output.stdout | from_json).blockdevices | selectattr('type', 'equalto', 'disk') | rejectattr('children', 'defined') | rejectattr('name', 'in', (pvs_output.stdout | from_json).report[0].pv | map(attribute='pv_name') | map('replace', '/dev/', '') | list) | list }}"
   when: disk_device is not defined or disk_device == none
 
-- name: Fail if no unallocated disk available
+- name: Set VG free space fact
+  ansible.builtin.set_fact:
+    vg_has_space: "{{ (vgs_output.stdout | from_json).report[0].vg | rejectattr('vg_free', 'equalto', '0.00g') | list | length > 0 }}"
+
+- name: Fail if no unallocated disk and no VG free space
   ansible.builtin.fail:
     msg: "No unallocated disks available and VG has insufficient free space. Please raise a storage request with the infrastructure team."
   when:
     - disk_device is not defined or disk_device == none
     - available_disks | length == 0
+    - not vg_has_space
 
 - name: Set available disk fact
   ansible.builtin.set_fact:
