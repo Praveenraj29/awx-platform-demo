@@ -31,8 +31,7 @@
           username: "{{ snow_username }}"
           password: "{{ snow_password }}"
         resource: "{{ snow_table }}"
-        query:
-          - u_vcenter_uuid: "={{ item.instance_uuid }}"
+        sysparm_query: "u_vcenter_uuid={{ item.instance_uuid }}"
       loop: "{{ vm_info.virtual_machines }}"
       loop_control:
         label: "{{ item.guest_name }}"
