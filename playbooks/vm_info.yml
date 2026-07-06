@@ -1,0 +1,25 @@
+---
+- name: Gather VM Information
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  tasks:
+    - name: Gather VM Information
+      community.vmware.vmware_vm_info:
+        hostname: "{{ esxi_hostname }}"
+        username: "{{ esxi_username }}"
+        password: "{{ esxi_password }}"
+        validate_certs: false
+      register: vm_info
+
+    - debug:
+        var: vm_info.virtual_machines
+
+    - name: List available collections
+      ansible.builtin.command: ansible-galaxy collection list
+      register: collections_output
+
+    - name: Show collections
+      ansible.builtin.debug:
+        var: collections_output.stdout_lines
