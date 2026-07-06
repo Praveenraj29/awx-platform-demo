@@ -1,0 +1,82 @@
+---
+- name: Sync VMware VMs to ServiceNow CMDB custom table
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars:
+    esxi_hostname: "{{ esxi_hostname }}"
+    esxi_username: "{{ esxi_username }}"
+    esxi_password: "{{ esxi_password }}"
+
+    snow_instance: "{{ snow_instance }}"        # e.g. dev220142.service-now.com
+    snow_username: "{{ snow_username }}"
+    snow_password: "{{ snow_password }}"
+    snow_table: "u_vmware_virtual_machine"
+
+  tasks:
+
+    - name: Gather VM info from ESXi/vCenter
+      community.vmware.vmware_vm_info:
+        hostname: "{{ esxi_hostname }}"
+        username: "{{ esxi_username }}"
+        password: "{{ esxi_password }}"
+        validate_certs: false
+      register: vm_info
+
+    - name: Look up existing Snow record by vCenter UUID
+      servicenow.itsm.api_info:
+        instance:
+          host: "{{ snow_instance }}"
+          username: "{{ snow_username }}"
+          password: "{{ snow_password }}"
+        resource: "{{ snow_table }}"
+        query:
+          - u_vcenter_uuid: "={{ item.instance_uuid }}"
+      loop: "{{ vm_info.virtual_machines }}"
+      loop_control:
+        label: "{{ item.guest_name }}"
+      register: snow_lookup
+
+    - name: Create new record if VM not found in Snow
+      servicenow.itsm.api:
+        instance:
+          host: "{{ snow_instance }}"
+          username: "{{ snow_username }}"
+          password: "{{ snow_password }}"
+        resource: "{{ snow_table }}"
+        action: post
+        data:
+          u_vm_name: "{{ item.item.guest_name }}"
+          u_vcenter_uuid: "{{ item.item.instance_uuid }}"
+          u_power_state: "{{ item.item.power_state }}"
+          u_ip_address: "{{ item.item.ip_address | default('') }}"
+          u_guest_os: "{{ item.item.guest_fullname | default('') }}"
+          u_last_synced: "{{ lookup('pipe', 'date -u +%Y-%m-%d\\ %H:%M:%S') }}"
+      loop: "{{ snow_lookup.results }}"
+      loop_control:
+        label: "{{ item.item.guest_name }}"
+      when: item.record | default([]) | length == 0
+
+    - name: Update existing record if VM already present in Snow
+      servicenow.itsm.api:
+        instance:
+          host: "{{ snow_instance }}"
+          username: "{{ snow_username }}"
+          password: "{{ snow_password }}"
+        resource: "{{ snow_table }}"
+        action: patch
+        sys_id: "{{ item.record[0].sys_id }}"
+        data:
+          u_power_state: "{{ item.item.power_state }}"
+          u_ip_address: "{{ item.item.ip_address | default('') }}"
+          u_guest_os: "{{ item.item.guest_fullname | default('') }}"
+          u_last_synced: "{{ lookup('pipe', 'date -u +%Y-%m-%d\\ %H:%M:%S') }}"
+      loop: "{{ snow_lookup.results }}"
+      loop_control:
+        label: "{{ item.item.guest_name }}"
+      when: item.record | default([]) | length > 0
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg: "Synced {{ vm_info.virtual_machines | length }} VMs to ServiceNow table {{ snow_table }}"
