@@ -1,5 +1,38 @@
 ---
-- hosts: all
+# provision.yml
+# Play 1: take the target_ip extra var (passed from ServiceNow via the Business Rule)
+# and dynamically register it as a temporary in-memory host, so we don't need
+# static AWX inventory entries for every VM the CMDB sync discovers.
+
+- name: Register target host dynamically
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  tasks:
+    - name: Fail early if target_ip was not provided
+      ansible.builtin.fail:
+        msg: "target_ip extra var is required but was not provided. Check the ServiceNow Business Rule payload."
+      when: target_ip is not defined or target_ip | length == 0
+
+    - name: Add target host to in-memory inventory
+      ansible.builtin.add_host:
+        name: "{{ target_ip }}"
+        groups: dynamic_targets
+        ansible_host: "{{ target_ip }}"
+        ansible_user: "{{ ansible_user | default('murali') }}"
+        # ansible_ssh_private_key_file / ansible_password should come from
+        # an AWX Machine Credential attached to this Job Template, not hardcoded here.
+
+    - name: Show resolved target
+      ansible.builtin.debug:
+        msg: "Provisioning will run against {{ target_ip }}"
+
+# Play 2: run the actual filesystem provisioning role against the
+# dynamically-registered host from Play 1.
+
+- name: Provision filesystem on target VM
+  hosts: dynamic_targets
   become: yes
   gather_facts: yes
   roles:
