@@ -9,10 +9,21 @@
     esxi_username: "{{ esxi_username }}"
     esxi_password: "{{ esxi_password }}"
 
-    snow_instance: "{{ snow_instance }}"        # e.g. dev220142.service-now.com
+    snow_instance: "{{ snow_instance }}"        # e.g. https://dev220142.service-now.com
     snow_username: "{{ snow_username }}"
     snow_password: "{{ snow_password }}"
+    snow_client_id: "{{ snow_client_id }}"
+    snow_client_secret: "{{ snow_client_secret }}"
     snow_table: "u_vmware_virtual_machine"
+
+    # Reusable OAuth instance block - used by every servicenow.itsm task below
+    snow_instance_auth:
+      host: "{{ snow_instance }}"
+      username: "{{ snow_username }}"
+      password: "{{ snow_password }}"
+      client_id: "{{ snow_client_id }}"
+      client_secret: "{{ snow_client_secret }}"
+      grant_type: password
 
   tasks:
 
@@ -26,10 +37,7 @@
 
     - name: Look up existing Snow record by vCenter UUID
       servicenow.itsm.api_info:
-        instance:
-          host: "{{ snow_instance }}"
-          username: "{{ snow_username }}"
-          password: "{{ snow_password }}"
+        instance: "{{ snow_instance_auth }}"
         resource: "{{ snow_table }}"
         sysparm_query: "u_vcenter_uuid={{ item.instance_uuid }}"
       loop: "{{ vm_info.virtual_machines }}"
@@ -39,10 +47,7 @@
 
     - name: Create new record if VM not found in Snow
       servicenow.itsm.api:
-        instance:
-          host: "{{ snow_instance }}"
-          username: "{{ snow_username }}"
-          password: "{{ snow_password }}"
+        instance: "{{ snow_instance_auth }}"
         resource: "{{ snow_table }}"
         action: post
         data:
@@ -59,10 +64,7 @@
 
     - name: Update existing record if VM already present in Snow
       servicenow.itsm.api:
-        instance:
-          host: "{{ snow_instance }}"
-          username: "{{ snow_username }}"
-          password: "{{ snow_password }}"
+        instance: "{{ snow_instance_auth }}"
         resource: "{{ snow_table }}"
         action: patch
         sys_id: "{{ item.record[0].sys_id }}"
