@@ -1,0 +1,45 @@
+---
+# discover_disk_attach.yml
+# Diagnostic-only: check linuxadm's current disks/controllers, and real free
+# space on candidate datastores, before writing the actual disk-attach playbook.
+
+- name: Discover VM disk/controller state and datastore free space
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars:
+    esxi_hostname: "{{ esxi_hostname }}"
+    esxi_username: "{{ esxi_username }}"
+    esxi_password: "{{ esxi_password }}"
+    target_vm_name: "linuxadm"
+
+  tasks:
+
+    - name: Get current disk/controller info for target VM
+      community.vmware.vmware_guest_disk_info:
+        hostname: "{{ esxi_hostname }}"
+        username: "{{ esxi_username }}"
+        password: "{{ esxi_password }}"
+        validate_certs: false
+        name: "{{ target_vm_name }}"
+      register: disk_info
+
+    - name: Show current disks and their controllers
+      ansible.builtin.debug:
+        var: disk_info.guest_disk_info
+
+    - name: Get datastore free space info
+      community.vmware.vmware_datastore_info:
+        hostname: "{{ esxi_hostname }}"
+        username: "{{ esxi_username }}"
+        password: "{{ esxi_password }}"
+        validate_certs: false
+      register: ds_info
+
+    - name: Show datastore names and free space (GB)
+      ansible.builtin.debug:
+        msg: "{{ item.name }}: {{ (item.freeSpace / 1024 / 1024 / 1024) | round(1) }} GB free of {{ (item.capacity / 1024 / 1024 / 1024) | round(1) }} GB total"
+      loop: "{{ ds_info.datastores }}"
+      loop_control:
+        label: "{{ item.name }}"
