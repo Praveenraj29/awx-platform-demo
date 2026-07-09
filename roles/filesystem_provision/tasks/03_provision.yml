@@ -46,5 +46,5 @@
   community.general.lvol:
     vg: "{{ active_vg }}"
     lv: "{{ lv_name }}"
-    size: "{{ lv_size }}"
+    size: "{{ lv_size }}G"
     state: present
