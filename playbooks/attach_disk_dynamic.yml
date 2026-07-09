@@ -138,6 +138,7 @@
         vg: "{{ vg_name }}"
         pvs: "{{ new_disk_device }}"
         state: present
+        remove_extra_pvs: false
 
     - name: Summary
       ansible.builtin.debug:
