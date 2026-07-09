@@ -1,0 +1,47 @@
+---
+# attach_disk.yml
+# Attaches a new virtual disk to a target VM via the ESXi/vCenter API.
+# Built using real facts discovered via discover_disk_attach.yml:
+#   - linuxadm's existing disks are all on controller 0 (paravirtual), units 0-2
+#   - ESX2-DS1 has 348GB+ free, ESX2-DS2 has 293GB+ free
+#
+# This is standalone/isolated on purpose (Sprint 5, step 1) - not yet wired
+# into the provisioning role. Once proven reliable, this logic will be
+# folded into the filesystem_provision workflow as a pre-step.
+
+- name: Attach new virtual disk to target VM
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars:
+    esxi_hostname: "{{ esxi_hostname }}"
+    esxi_username: "{{ esxi_username }}"
+    esxi_password: "{{ esxi_password }}"
+    target_vm_name: "{{ target_vm_name | default('linuxadm') }}"
+    new_disk_size_gb: "{{ new_disk_size_gb | default(10) }}"
+    target_datastore: "{{ target_datastore | default('ESX2-DS1') }}"
+
+  tasks:
+
+    - name: Attach new disk on existing controller 0
+      community.vmware.vmware_guest_disk:
+        hostname: "{{ esxi_hostname }}"
+        username: "{{ esxi_username }}"
+        password: "{{ esxi_password }}"
+        validate_certs: false
+        datacenter: "ha-datacenter"
+        name: "{{ target_vm_name }}"
+        disk:
+          - size_gb: "{{ new_disk_size_gb }}"
+            type: thin
+            datastore: "{{ target_datastore }}"
+            controller_type: paravirtual
+            controller_number: 0
+            # unit_number intentionally omitted - module assigns next free slot
+            state: present
+      register: disk_attach_result
+
+    - name: Show result
+      ansible.builtin.debug:
+        var: disk_attach_result
