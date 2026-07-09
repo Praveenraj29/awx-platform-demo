@@ -96,3 +96,42 @@ disk via the ESXi API when genuinely needed.
   branch is written but not yet exercised by a real test request —
   next session should deliberately request more space than currently
   free to validate this path.
+
+## Sprint 5 details
+
+Extends provisioning so a request can exceed currently free VG space.
+The workflow checks free space first, and only attaches a new virtual
+disk via the ESXi API when genuinely needed.
+
+- **Discovery playbook**: `playbooks/discover_disk_attach.yml` —
+  probes existing disk/controller layout and real datastore free space
+  before writing any attach logic
+- **Standalone disk-attach**: `playbooks/attach_disk.yml` — proven via
+  `community.vmware.vmware_guest_disk`
+- **Integrated auto-scale playbook**: `playbooks/provision_with_autoscale.yml`
+  — checks `vgs` free space, decides whether a new disk is needed,
+  dynamically looks up the next free controller unit number and
+  existing datastore, attaches if needed, extends the VG, then creates
+  the LV/filesystem/mount
+- **Verified end-to-end**: requested 20GB against a VG with only
+  14.99GB free — correctly attached a 7GB disk, extended the VG,
+  created a 20GB LV spanning both the original and new disk. Math
+  checked out exactly (14.99 + 7 - 20 = 1.99GB free, matched VG's
+  reported free space precisely)
+
+### Known gotchas (standalone ESXi only, not vCenter-managed)
+
+- New disks must be placed on the **same datastore** as the VM's
+  existing disks — cross-datastore placement fails with
+  `File ... was not found`, a module limitation specific to
+  non-vCenter-managed hosts
+- `delegate_to: localhost` tasks need `become: false` explicitly —
+  otherwise they inherit the play's `become: yes` and fail trying to
+  `sudo` on the AWX execution container, which does not have sudo installed
+- Avoid self-referencing `default()` in `vars:` — causes infinite
+  recursion when no higher-precedence source (like extra vars) defines
+  the variable first
+- New-disk identification uses a before/after snapshot diff of `sd*`
+  device names rather than heuristics (partition/removable/lvm-master
+  checks) — the heuristic approach misidentified an existing LVM
+  device (`dm-3`) as the new disk in testing
