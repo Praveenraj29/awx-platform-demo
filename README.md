@@ -31,7 +31,7 @@ Two flows, one platform:
 | 2 — AWX Job Template + Survey | ✅ Done | Role wrapped in AWX, survey-driven variables |
 | 3 — Snow catalog → AWX variables | ✅ Done | End-to-end: Snow form → Business Rule → OAuth → AWX → VM |
 | 4 — CMDB sync + dynamic VM dropdown | ✅ Done | ESXi VMs → Snow custom table (OAuth) → catalog Reference field, filtered to powered-on VMs, dynamic AWX host targeting via add_host |
-| 5 — Disk attach via pyvmomi | 🔄 In progress | Standalone disk-attach playbook proven working (community.vmware.vmware_guest_disk); integrated auto-scale playbook written, pending first live test of the new-disk branch |
+| 5 — Disk attach via pyvmomi | ✅ Done | Auto-scale provisioning: checks VG free space, attaches new disk via ESXi API only when needed, extends VG, creates LV/filesystem/mount |
 | 6 — AWX multi-step Workflow | ✅ Done | Native AWX Workflow Visualizer: Check Capacity → branches to Attach Disk (on failure) or straight to Provision Filesystem (on success) |
 | 7 — Personas + Approval gate | ⬜ Pending | Developer requests → VM owner approves → AWX runs |
 | 8 — Closure loop | ⬜ Pending | AWX webhook → RITM auto-closed + email notification |
