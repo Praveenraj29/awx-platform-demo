@@ -32,7 +32,7 @@ Two flows, one platform:
 | 3 — Snow catalog → AWX variables | ✅ Done | End-to-end: Snow form → Business Rule → OAuth → AWX → VM |
 | 4 — CMDB sync + dynamic VM dropdown | ✅ Done | ESXi VMs → Snow custom table (OAuth) → catalog Reference field, filtered to powered-on VMs, dynamic AWX host targeting via add_host |
 | 5 — Disk attach via pyvmomi | 🔄 In progress | Standalone disk-attach playbook proven working (community.vmware.vmware_guest_disk); integrated auto-scale playbook written, pending first live test of the new-disk branch |
-| 6 — AWX multi-step Workflow | ⬜ Pending | Discover → Attach Disk → Provision Filesystem chained |
+| 6 — AWX multi-step Workflow | ✅ Done | Native AWX Workflow Visualizer: Check Capacity → branches to Attach Disk (on failure) or straight to Provision Filesystem (on success) |
 | 7 — Personas + Approval gate | ⬜ Pending | Developer requests → VM owner approves → AWX runs |
 | 8 — Closure loop | ⬜ Pending | AWX webhook → RITM auto-closed + email notification |
 | 9 — Docs + architecture diagram + video | ⬜ Pending | README, diagram, YouTube demo recording |
@@ -135,3 +135,48 @@ disk via the ESXi API when genuinely needed.
   device names rather than heuristics (partition/removable/lvm-master
   checks) — the heuristic approach misidentified an existing LVM
   device (`dm-3`) as the new disk in testing
+
+## Sprint 6 details
+
+Built as a native AWX Workflow using the Workflow Visualizer, chaining
+three Job Templates with success/failure branching:
+- **Check Capacity**: runs `vgs`, deliberately fails if free space is
+  insufficient — this failure is the branch trigger (AWX Workflow
+  Visualizer branches on job success/failure, not custom variable values)
+- **Attach Disk**: generalized version of Sprint 5's disk-attach logic
+  (`playbooks/attach_disk_dynamic.yml`) — no hardcoded VM name
+- **Provision Filesystem**: existing job template, reused unchanged
+- **Convergence limitation**: AWX's Workflow Visualizer doesn't cleanly
+  support linking two different parent nodes to one existing shared child
+  through the UI — ended up with two separate (functionally identical)
+  Provision Filesystem nodes rather than a true visual diamond. Both
+  paths tested and verified working independently.
+
+### Two real bugs found and fixed during testing
+
+Both were latent issues from Sprint 5 that only surfaced once Sprint 6
+exercised code paths more thoroughly:
+
+1. **LV size unit suffix missing** (`roles/filesystem_provision/tasks/03_provision.yml`)
+   — `community.general.lvol`'s `size` parameter was passed as
+   `{{ lv_size }}` with no unit, which defaults to megabytes/extents
+   rather than gigabytes. Silently created 4-8MB volumes instead of the
+   requested GB size across every prior test. Fixed by appending `G`.
+
+2. **Destructive `lvg` default** (`playbooks/attach_disk_dynamic.yml`,
+   `playbooks/provision_with_autoscale.yml`) — `community.general.lvg`
+   defaults `remove_extra_pvs: true`, meaning specifying only the new
+   disk as `pvs` caused the module to attempt removing every *other*
+   PV from the VG (including the ones backing root/home/swap). Caught
+   by a safe failure (PVs were in use), not by design — could have
+   destroyed existing data on a VG where the other PVs weren't actively
+   mounted. Fixed by explicitly setting `remove_extra_pvs: false`.
+
+### Verified end-to-end (both branches)
+
+- **Success path**: 5GB request against 14.99GB free → skipped Attach
+  Disk, went straight to Provision Filesystem, correct 5GB LV created
+- **Failure path**: 20GB request against 14.99GB free → correctly
+  routed through Attach Disk (7GB disk attached, VG extended), then
+  Provision Filesystem created a correct 20GB LV spanning both disks.
+  Math checked out exactly (14.99 + 7 - 20 = 1.99GB free, matched)
