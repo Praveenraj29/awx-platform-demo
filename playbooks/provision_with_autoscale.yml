@@ -39,7 +39,7 @@
   gather_facts: yes
 
   vars:
-    vg_name: "{{ vg_name | default('rhel_192') }}"
+    vg_name: "rhel_192"
     esxi_hostname: "{{ esxi_hostname }}"
     esxi_username: "{{ esxi_username }}"
     esxi_password: "{{ esxi_password }}"
