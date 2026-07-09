@@ -33,9 +33,10 @@ Two flows, one platform:
 | 4 — CMDB sync + dynamic VM dropdown | ✅ Done | ESXi VMs → Snow custom table (OAuth) → catalog Reference field, filtered to powered-on VMs, dynamic AWX host targeting via add_host |
 | 5 — Disk attach via pyvmomi | ✅ Done | Auto-scale provisioning: checks VG free space, attaches new disk via ESXi API only when needed, extends VG, creates LV/filesystem/mount |
 | 6 — AWX multi-step Workflow | ✅ Done | Native AWX Workflow Visualizer: Check Capacity → branches to Attach Disk (on failure) or straight to Provision Filesystem (on success) |
-| 7 — Personas + Approval gate | ⬜ Pending | Developer requests → VM owner approves → AWX runs |
-| 8 — Closure loop | ⬜ Pending | AWX webhook → RITM auto-closed + email notification |
-| 9 — Docs + architecture diagram + video | ⬜ Pending | README, diagram, YouTube demo recording |
+| 7 — Credentials hardening | ⬜ Pending | Move ESXi/ServiceNow secrets from plaintext job template vars into AWX Credentials |
+| 8 — Personas + Approval gate | ⬜ Pending | Developer requests → VM owner approves → AWX runs |
+| 9 — Closure loop | ⬜ Pending | AWX webhook → RITM auto-closed + email notification |
+| 10 — Docs + architecture diagram + video | ⬜ Pending | README, diagram, YouTube demo recording |
 
 ## What it does today (Sprint 4 complete)
 
