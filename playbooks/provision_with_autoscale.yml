@@ -202,8 +202,12 @@
         fstype: "{{ fstype }}"
         state: mounted
 
+    - name: Build summary message
+      ansible.builtin.set_fact:
+        summary_message: >-
+          Provisioned {{ lv_size }}GB LV '{{ lv_name }}' mounted at {{ mount_point }}.
+          {% if need_new_disk | bool %}A new disk was attached to satisfy this request (VG extended before LV creation).{% else %}Existing free space was sufficient - no new disk was attached.{% endif %}
+
     - name: Summary
       ansible.builtin.debug:
-        msg: >-
-          Provisioned {{ lv_size }}GB LV '{{ lv_name }}' mounted at {{ mount_point }}.
-          {{ 'A new ' + (disk_attach_result.disk_changes.values() | list | length | string if need_new_disk else '0') + 'GB disk was attached to satisfy this request.' if need_new_disk else 'Existing free space was sufficient - no new disk was attached.' }}
+        msg: "{{ summary_message }}"
