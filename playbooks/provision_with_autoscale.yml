@@ -84,6 +84,7 @@
         datacenter: "{{ esxi_datacenter }}"
         name: "{{ inventory_hostname_vm | default(ansible_hostname) }}"
       delegate_to: localhost
+      become: false
       register: current_disks
       when: need_new_disk | bool
 
@@ -111,6 +112,7 @@
             unit_number: "{{ next_unit_number }}"
             state: present
       delegate_to: localhost
+      become: false
       register: disk_attach_result
       when: need_new_disk | bool
 
