@@ -38,7 +38,7 @@
             datastore: "{{ target_datastore }}"
             controller_type: paravirtual
             controller_number: 0
-            # unit_number intentionally omitted - module assigns next free slot
+            unit_number: 3
             state: present
       register: disk_attach_result
 
