@@ -18,9 +18,9 @@
     esxi_hostname: "{{ esxi_hostname }}"
     esxi_username: "{{ esxi_username }}"
     esxi_password: "{{ esxi_password }}"
-    target_vm_name: "{{ target_vm_name | default('linuxadm') }}"
-    new_disk_size_gb: "{{ new_disk_size_gb | default(10) }}"
-    target_datastore: "{{ target_datastore | default('ESX2-DS1') }}"
+    target_vm_name: "linuxadm"
+    new_disk_size_gb: 10
+    target_datastore: "ESX2-DS1"
 
   tasks:
 
