@@ -22,6 +22,7 @@
         username: "{{ esxi_username }}"
         password: "{{ esxi_password }}"
         validate_certs: false
+        datacenter: "ha-datacenter"
         name: "{{ target_vm_name }}"
       register: disk_info
 
