@@ -56,6 +56,10 @@
           - fstype is defined
         fail_msg: "mount_point, lv_name, lv_size, and fstype are all required extra vars."
 
+    # ---------------------------------------------------------------
+    # Step 1: check existing free space in the VG
+    # ---------------------------------------------------------------
+
     - name: Get current VG free space (in GB)
       ansible.builtin.command: "vgs --noheadings --units g --nosuffix -o vg_free {{ vg_name }}"
       register: vg_free_raw
@@ -74,6 +78,14 @@
         msg: >-
           VG '{{ vg_name }}' has {{ vg_free_gb }}GB free, {{ lv_size }}GB requested.
           {{ 'Attaching a new disk.' if need_new_disk else 'Using existing free space, no new disk needed.' }}
+
+    # ---------------------------------------------------------------
+    # Step 2: attach a new disk via the ESXi API, only if needed
+    # ---------------------------------------------------------------
+
+    - name: Snapshot existing sd* disk names before any attach
+      ansible.builtin.set_fact:
+        disks_before_attach: "{{ ansible_devices.keys() | select('match', '^sd[a-z]$') | list }}"
 
     - name: Look up VM's current disk layout to find next free unit number and datastore
       community.vmware.vmware_guest_disk_info:
@@ -135,17 +147,24 @@
           - hardware
       when: need_new_disk | bool
 
-    - name: Identify the newly attached disk device (first unmounted, unpartitioned disk not already in the VG)
+    - name: Identify the newly attached disk by diffing against the pre-attach snapshot
       ansible.builtin.set_fact:
-        new_disk_device: "/dev/{{ item.key }}"
-      loop: "{{ ansible_devices | dict2items }}"
-      loop_control:
-        label: "{{ item.key }}"
+        new_disk_names: "{{ (ansible_devices.keys() | select('match', '^sd[a-z]$') | list) | difference(disks_before_attach) }}"
+      when: need_new_disk | bool
+
+    - name: Fail clearly if the new disk can't be uniquely identified
+      ansible.builtin.fail:
+        msg: >-
+          Expected exactly one new disk after attach, found: {{ new_disk_names }}.
+          Before: {{ disks_before_attach }}, After: {{ ansible_devices.keys() | select('match', '^sd[a-z]$') | list }}
       when:
         - need_new_disk | bool
-        - item.value.partitions | length == 0
-        - item.value.removable == "0"
-        - "'lvm' not in (item.value.links.masters | default([]) | join(','))"
+        - new_disk_names | length != 1
+
+    - name: Set new disk device path
+      ansible.builtin.set_fact:
+        new_disk_device: "/dev/{{ new_disk_names[0] }}"
+      when: need_new_disk | bool
 
     - name: Create physical volume on new disk
       community.general.lvg:
@@ -153,6 +172,10 @@
         pvs: "{{ new_disk_device }}"
         state: present
       when: need_new_disk | bool
+
+    # ---------------------------------------------------------------
+    # Step 3: create the logical volume, filesystem, and mount
+    # ---------------------------------------------------------------
 
     - name: Create logical volume
       community.general.lvol:
