@@ -1,0 +1,65 @@
+---
+# check_capacity.yml
+# Workflow node 1: "Check Capacity"
+#
+# Succeeds if the target VG already has enough free space for the request.
+# Deliberately FAILS if not - this failure is used as the branch trigger in
+# the AWX Workflow Visualizer (on failure -> Attach Disk node runs next).
+#
+# Required extra vars: target_ip, lv_size (GB, integer)
+# Optional: vg_name (default 'rhel_192')
+
+- name: Register target host dynamically
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  tasks:
+    - name: Fail early if target_ip was not provided
+      ansible.builtin.fail:
+        msg: "target_ip extra var is required but was not provided."
+      when: target_ip is not defined or target_ip | length == 0
+
+    - name: Add target host to in-memory inventory
+      ansible.builtin.add_host:
+        name: "{{ target_ip }}"
+        groups: dynamic_targets
+        ansible_host: "{{ target_ip }}"
+        ansible_user: "{{ ansible_user | default('murali') }}"
+
+
+- name: Check whether existing VG free space covers the request
+  hosts: dynamic_targets
+  become: yes
+  gather_facts: false
+
+  vars:
+    vg_name: "rhel_192"
+
+  tasks:
+
+    - name: Assert required variables are defined
+      ansible.builtin.assert:
+        that:
+          - lv_size is defined
+        fail_msg: "lv_size is a required extra var."
+
+    - name: Get current VG free space (in GB)
+      ansible.builtin.command: "vgs --noheadings --units g --nosuffix -o vg_free {{ vg_name }}"
+      register: vg_free_raw
+      changed_when: false
+
+    - name: Parse VG free space as a number
+      ansible.builtin.set_fact:
+        vg_free_gb: "{{ vg_free_raw.stdout | trim | float }}"
+
+    - name: Report capacity status
+      ansible.builtin.debug:
+        msg: "VG '{{ vg_name }}' has {{ vg_free_gb }}GB free, {{ lv_size }}GB requested."
+
+    - name: Fail if free space is insufficient (this drives workflow branching)
+      ansible.builtin.fail:
+        msg: >-
+          Insufficient free space: {{ vg_free_gb }}GB available, {{ lv_size }}GB requested.
+          Workflow will proceed to the Attach Disk step.
+      when: vg_free_gb | float < lv_size | float

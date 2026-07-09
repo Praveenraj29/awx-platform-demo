@@ -1,0 +1,144 @@
+---
+# attach_disk_dynamic.yml
+# Workflow node 2: "Attach Disk" (only runs if Check Capacity failed)
+#
+# Attaches a new virtual disk sized to cover the shortfall, on the same
+# datastore/controller as the VM's existing disks (required on standalone
+# ESXi - see notes in attach_disk.yml), rescans SCSI on the guest, and
+# extends the VG. Fully dynamic - no hardcoded VM name, size, or datastore.
+#
+# Required extra vars: target_ip, target_vm_name, lv_size (GB, integer),
+#                       esxi_hostname, esxi_username, esxi_password
+# Optional: vg_name (default 'rhel_192')
+
+- name: Register target host dynamically
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  tasks:
+    - name: Fail early if target_ip was not provided
+      ansible.builtin.fail:
+        msg: "target_ip extra var is required but was not provided."
+      when: target_ip is not defined or target_ip | length == 0
+
+    - name: Add target host to in-memory inventory
+      ansible.builtin.add_host:
+        name: "{{ target_ip }}"
+        groups: dynamic_targets
+        ansible_host: "{{ target_ip }}"
+        ansible_user: "{{ ansible_user | default('murali') }}"
+
+
+- name: Attach a new disk and extend the VG
+  hosts: dynamic_targets
+  become: yes
+  gather_facts: yes
+
+  vars:
+    vg_name: "rhel_192"
+    esxi_hostname: "{{ esxi_hostname }}"
+    esxi_username: "{{ esxi_username }}"
+    esxi_password: "{{ esxi_password }}"
+    esxi_datacenter: "ha-datacenter"
+
+  tasks:
+
+    - name: Assert required variables are defined
+      ansible.builtin.assert:
+        that:
+          - target_vm_name is defined
+          - lv_size is defined
+        fail_msg: "target_vm_name and lv_size are required extra vars."
+
+    - name: Get current VG free space (in GB) again (workflow nodes don't share state)
+      ansible.builtin.command: "vgs --noheadings --units g --nosuffix -o vg_free {{ vg_name }}"
+      register: vg_free_raw
+      changed_when: false
+
+    - name: Parse VG free space as a number
+      ansible.builtin.set_fact:
+        vg_free_gb: "{{ vg_free_raw.stdout | trim | float }}"
+
+    - name: Snapshot existing sd* disk names before attach
+      ansible.builtin.set_fact:
+        disks_before_attach: "{{ ansible_devices.keys() | select('match', '^sd[a-z]$') | list }}"
+
+    - name: Look up VM's current disk layout to find next free unit number and datastore
+      community.vmware.vmware_guest_disk_info:
+        hostname: "{{ esxi_hostname }}"
+        username: "{{ esxi_username }}"
+        password: "{{ esxi_password }}"
+        validate_certs: false
+        datacenter: "{{ esxi_datacenter }}"
+        name: "{{ target_vm_name }}"
+      delegate_to: localhost
+      become: false
+      register: current_disks
+
+    - name: Work out next free unit number and existing datastore
+      ansible.builtin.set_fact:
+        next_unit_number: "{{ (current_disks.guest_disk_info.values() | map(attribute='unit_number') | list | max) + 1 }}"
+        existing_datastore: "{{ (current_disks.guest_disk_info.values() | list)[0].backing_datastore }}"
+        existing_controller: "{{ (current_disks.guest_disk_info.values() | list)[0].controller_bus_number }}"
+
+    - name: Attach new disk sized to cover the shortfall
+      community.vmware.vmware_guest_disk:
+        hostname: "{{ esxi_hostname }}"
+        username: "{{ esxi_username }}"
+        password: "{{ esxi_password }}"
+        validate_certs: false
+        datacenter: "{{ esxi_datacenter }}"
+        name: "{{ target_vm_name }}"
+        disk:
+          - size_gb: "{{ (lv_size | float - vg_free_gb | float) | round(0, 'ceil') | int + 1 }}"
+            type: thin
+            datastore: "{{ existing_datastore }}"
+            controller_type: paravirtual
+            controller_number: "{{ existing_controller }}"
+            unit_number: "{{ next_unit_number }}"
+            state: present
+      delegate_to: localhost
+      become: false
+      register: disk_attach_result
+
+    - name: Rescan SCSI bus on target to discover the new disk
+      ansible.builtin.shell: |
+        for host in /sys/class/scsi_host/host*/scan; do
+          echo "- - -" > "$host"
+        done
+
+    - name: Wait for the new block device to appear
+      ansible.builtin.wait_for:
+        path: "/sys/class/scsi_host"
+        timeout: 5
+
+    - name: Re-gather disk facts after rescan
+      ansible.builtin.setup:
+        gather_subset:
+          - hardware
+
+    - name: Identify the newly attached disk by diffing against the pre-attach snapshot
+      ansible.builtin.set_fact:
+        new_disk_names: "{{ (ansible_devices.keys() | select('match', '^sd[a-z]$') | list) | difference(disks_before_attach) }}"
+
+    - name: Fail clearly if the new disk can't be uniquely identified
+      ansible.builtin.fail:
+        msg: >-
+          Expected exactly one new disk after attach, found: {{ new_disk_names }}.
+          Before: {{ disks_before_attach }}, After: {{ ansible_devices.keys() | select('match', '^sd[a-z]$') | list }}
+      when: new_disk_names | length != 1
+
+    - name: Set new disk device path
+      ansible.builtin.set_fact:
+        new_disk_device: "/dev/{{ new_disk_names[0] }}"
+
+    - name: Create physical volume on new disk
+      community.general.lvg:
+        vg: "{{ vg_name }}"
+        pvs: "{{ new_disk_device }}"
+        state: present
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg: "Attached new disk {{ new_disk_device }} and extended VG '{{ vg_name }}'. Provision Filesystem step will run next."
