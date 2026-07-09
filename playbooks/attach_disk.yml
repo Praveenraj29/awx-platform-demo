@@ -20,7 +20,7 @@
     esxi_password: "{{ esxi_password }}"
     target_vm_name: "linuxadm"
     new_disk_size_gb: 10
-    target_datastore: "ESX2-DS1"
+    target_datastore: "ESX2-DS2"
 
   tasks:
 
