@@ -1,0 +1,184 @@
+---
+# provision_with_autoscale.yml
+#
+# Full self-service storage provisioning flow:
+#   1. Dynamically register the target VM (from CMDB-resolved IP)
+#   2. Check existing VG free space on the target
+#   3. If insufficient -> attach a new virtual disk via the ESXi API
+#      (same datastore as the VM's existing disks - required on standalone
+#      ESXi, see attach_disk.yml notes), rescan SCSI, pvcreate, vgextend
+#   4. Create the LV, filesystem, mount point, and fstab entry
+#
+# Required extra vars: target_ip, mount_point, lv_name, lv_size (GB, integer),
+#                       fstype
+# Optional: vg_name (default 'rhel_192', matches existing convention seen on
+#           linuxadm - adjust per-VM if this varies), esxi_hostname/username/password
+
+- name: Register target host dynamically
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  tasks:
+    - name: Fail early if target_ip was not provided
+      ansible.builtin.fail:
+        msg: "target_ip extra var is required but was not provided."
+      when: target_ip is not defined or target_ip | length == 0
+
+    - name: Add target host to in-memory inventory
+      ansible.builtin.add_host:
+        name: "{{ target_ip }}"
+        groups: dynamic_targets
+        ansible_host: "{{ target_ip }}"
+        ansible_user: "{{ ansible_user | default('murali') }}"
+
+
+- name: Provision storage, expanding capacity if needed
+  hosts: dynamic_targets
+  become: yes
+  gather_facts: yes
+
+  vars:
+    vg_name: "{{ vg_name | default('rhel_192') }}"
+    esxi_hostname: "{{ esxi_hostname }}"
+    esxi_username: "{{ esxi_username }}"
+    esxi_password: "{{ esxi_password }}"
+    esxi_datacenter: "ha-datacenter"
+
+  tasks:
+
+    - name: Assert required variables are defined
+      ansible.builtin.assert:
+        that:
+          - mount_point is defined
+          - lv_name is defined
+          - lv_size is defined
+          - fstype is defined
+        fail_msg: "mount_point, lv_name, lv_size, and fstype are all required extra vars."
+
+    - name: Get current VG free space (in GB)
+      ansible.builtin.command: "vgs --noheadings --units g --nosuffix -o vg_free {{ vg_name }}"
+      register: vg_free_raw
+      changed_when: false
+
+    - name: Parse VG free space as a number
+      ansible.builtin.set_fact:
+        vg_free_gb: "{{ vg_free_raw.stdout | trim | float }}"
+
+    - name: Determine if a new disk is needed
+      ansible.builtin.set_fact:
+        need_new_disk: "{{ vg_free_gb | float < lv_size | float }}"
+
+    - name: Show capacity decision
+      ansible.builtin.debug:
+        msg: >-
+          VG '{{ vg_name }}' has {{ vg_free_gb }}GB free, {{ lv_size }}GB requested.
+          {{ 'Attaching a new disk.' if need_new_disk else 'Using existing free space, no new disk needed.' }}
+
+    - name: Look up VM's current disk layout to find next free unit number and datastore
+      community.vmware.vmware_guest_disk_info:
+        hostname: "{{ esxi_hostname }}"
+        username: "{{ esxi_username }}"
+        password: "{{ esxi_password }}"
+        validate_certs: false
+        datacenter: "{{ esxi_datacenter }}"
+        name: "{{ inventory_hostname_vm | default(ansible_hostname) }}"
+      delegate_to: localhost
+      register: current_disks
+      when: need_new_disk | bool
+
+    - name: Work out next free unit number and existing datastore
+      ansible.builtin.set_fact:
+        next_unit_number: "{{ (current_disks.guest_disk_info.values() | map(attribute='unit_number') | list | max) + 1 }}"
+        existing_datastore: "{{ (current_disks.guest_disk_info.values() | list)[0].backing_datastore }}"
+        existing_controller: "{{ (current_disks.guest_disk_info.values() | list)[0].controller_bus_number }}"
+      when: need_new_disk | bool
+
+    - name: Attach new disk on the same datastore/controller as existing disks
+      community.vmware.vmware_guest_disk:
+        hostname: "{{ esxi_hostname }}"
+        username: "{{ esxi_username }}"
+        password: "{{ esxi_password }}"
+        validate_certs: false
+        datacenter: "{{ esxi_datacenter }}"
+        name: "{{ inventory_hostname_vm | default(ansible_hostname) }}"
+        disk:
+          - size_gb: "{{ (lv_size | float - vg_free_gb | float) | round(0, 'ceil') | int + 1 }}"
+            type: thin
+            datastore: "{{ existing_datastore }}"
+            controller_type: paravirtual
+            controller_number: "{{ existing_controller }}"
+            unit_number: "{{ next_unit_number }}"
+            state: present
+      delegate_to: localhost
+      register: disk_attach_result
+      when: need_new_disk | bool
+
+    - name: Rescan SCSI bus on target to discover the new disk
+      ansible.builtin.shell: |
+        for host in /sys/class/scsi_host/host*/scan; do
+          echo "- - -" > "$host"
+        done
+      when: need_new_disk | bool
+
+    - name: Wait for the new block device to appear
+      ansible.builtin.wait_for:
+        path: "/sys/class/scsi_host"
+        timeout: 5
+      when: need_new_disk | bool
+
+    - name: Re-gather disk facts after rescan
+      ansible.builtin.setup:
+        gather_subset:
+          - hardware
+      when: need_new_disk | bool
+
+    - name: Identify the newly attached disk device (first unmounted, unpartitioned disk not already in the VG)
+      ansible.builtin.set_fact:
+        new_disk_device: "/dev/{{ item.key }}"
+      loop: "{{ ansible_devices | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      when:
+        - need_new_disk | bool
+        - item.value.partitions | length == 0
+        - item.value.removable == "0"
+        - "'lvm' not in (item.value.links.masters | default([]) | join(','))"
+
+    - name: Create physical volume on new disk
+      community.general.lvg:
+        vg: "{{ vg_name }}"
+        pvs: "{{ new_disk_device }}"
+        state: present
+      when: need_new_disk | bool
+
+    - name: Create logical volume
+      community.general.lvol:
+        vg: "{{ vg_name }}"
+        lv: "{{ lv_name }}"
+        size: "{{ lv_size }}G"
+        state: present
+
+    - name: Create filesystem
+      community.general.filesystem:
+        fstype: "{{ fstype }}"
+        dev: "/dev/{{ vg_name }}/{{ lv_name }}"
+
+    - name: Create mount point directory
+      ansible.builtin.file:
+        path: "{{ mount_point }}"
+        state: directory
+        mode: "0755"
+
+    - name: Mount filesystem and add persistent fstab entry
+      ansible.posix.mount:
+        path: "{{ mount_point }}"
+        src: "/dev/{{ vg_name }}/{{ lv_name }}"
+        fstype: "{{ fstype }}"
+        state: mounted
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg: >-
+          Provisioned {{ lv_size }}GB LV '{{ lv_name }}' mounted at {{ mount_point }}.
+          {{ 'A new ' + (disk_attach_result.disk_changes.values() | list | length | string if need_new_disk else '0') + 'GB disk was attached to satisfy this request.' if need_new_disk else 'Existing free space was sufficient - no new disk was attached.' }}

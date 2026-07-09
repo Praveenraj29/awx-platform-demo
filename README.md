@@ -31,7 +31,7 @@ Two flows, one platform:
 | 2 — AWX Job Template + Survey | ✅ Done | Role wrapped in AWX, survey-driven variables |
 | 3 — Snow catalog → AWX variables | ✅ Done | End-to-end: Snow form → Business Rule → OAuth → AWX → VM |
 | 4 — CMDB sync + dynamic VM dropdown | ✅ Done | ESXi VMs → Snow custom table (OAuth) → catalog Reference field, filtered to powered-on VMs, dynamic AWX host targeting via add_host |
-| 5 — Disk attach via pyvmomi | ⬜ Pending | vmware_guest_disk → attach disk to VM via ESXi API |
+| 5 — Disk attach via pyvmomi | 🔄 In progress | Standalone disk-attach playbook proven working (community.vmware.vmware_guest_disk); integrated auto-scale playbook written, pending first live test of the new-disk branch |
 | 6 — AWX multi-step Workflow | ⬜ Pending | Discover → Attach Disk → Provision Filesystem chained |
 | 7 — Personas + Approval gate | ⬜ Pending | Developer requests → VM owner approves → AWX runs |
 | 8 — Closure loop | ⬜ Pending | AWX webhook → RITM auto-closed + email notification |
@@ -73,3 +73,26 @@ Two flows, one platform:
 ## Author
 
 Praveenraj — DevOps / Platform Engineering
+
+## Sprint 5 details (in progress)
+
+Extends provisioning so a request can exceed currently free VG space —
+the workflow now checks free space first, and only attaches a new virtual
+disk via the ESXi API when genuinely needed.
+
+- **Standalone disk-attach playbook**: `playbooks/attach_disk.yml`
+  — proven working via `community.vmware.vmware_guest_disk`
+- **Known gotcha (standalone ESXi only, not vCenter-managed)**: new disks
+  must be placed on the **same datastore** as the VM's existing disks.
+  Cross-datastore placement fails with `File ... was not found` — appears
+  to be a module limitation specific to non-vCenter-managed hosts.
+- **Integrated playbook**: `playbooks/provision_with_autoscale.yml`
+  — checks `vgs` free space, decides whether a new disk is needed,
+  dynamically looks up the next free controller unit number and existing
+  datastore (not hardcoded), attaches if needed, extends the VG, then
+  creates the LV/filesystem/mount as before
+- **Status**: disk-attach mechanics are tested and working end-to-end
+  (verified via `lsblk` on the target VM). The VG-extend / auto-scale
+  branch is written but not yet exercised by a real test request —
+  next session should deliberately request more space than currently
+  free to validate this path.
