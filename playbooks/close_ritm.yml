@@ -1,0 +1,49 @@
+---
+- name: Close the RITM after successful provisioning
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars:
+    snow_instance: "{{ snow_instance }}"
+    snow_username: "{{ snow_username }}"
+    snow_password: "{{ snow_password }}"
+    snow_client_id: "{{ snow_client_id }}"
+    snow_client_secret: "{{ snow_client_secret }}"
+
+    snow_instance_auth:
+      host: "{{ snow_instance }}"
+      username: "{{ snow_username }}"
+      password: "{{ snow_password }}"
+      client_id: "{{ snow_client_id }}"
+      client_secret: "{{ snow_client_secret }}"
+      grant_type: password
+
+  tasks:
+
+    - name: Assert ritm_sys_id was provided
+      ansible.builtin.assert:
+        that:
+          - ritm_sys_id is defined
+          - ritm_sys_id | length > 0
+        fail_msg: "ritm_sys_id extra var is required to close the RITM."
+
+    - name: Close the RITM record
+      servicenow.itsm.api:
+        instance: "{{ snow_instance_auth }}"
+        resource: "sc_req_item"
+        action: patch
+        sys_id: "{{ ritm_sys_id }}"
+        data:
+          state: "closed_complete"
+          stage: "complete"
+          close_notes: >-
+            Filesystem provisioned successfully on {{ target_vm_name | default('target VM') }}:
+            {{ mount_point | default('') }} ({{ lv_size | default('') }}GB).
+            Automated by AWX.
+          work_notes: "Provisioning completed by AWX. RITM automatically closed."
+      register: close_result
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg: "RITM {{ ritm_sys_id }} closed successfully."
