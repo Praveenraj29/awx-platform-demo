@@ -280,3 +280,35 @@ useful part:
   Business Rule was found active on the same table/order during
   debugging - turned out not to be the cause here, but worth a cleanup
   pass since dormant same-table Business Rules add real debugging noise
+
+### Follow-up fix: point approval flow at the Workflow Template, not the plain Job Template
+
+The initial Sprint 8 implementation called `template_id: 13` (the plain
+`Provision Filesystem` job template), which assumes free space already
+exists and has no disk-attach fallback - meaning the approval-gated path
+would have failed outright on any request exceeding current free space,
+completely bypassing the Sprint 6 workflow logic.
+
+**Fixed by:**
+- Changing the REST Message endpoint from `/api/v2/job_templates/${template_id}/launch/`
+  to `/api/v2/workflow_job_templates/${template_id}/launch/`
+- Pointing `template_id` at the Workflow Template (`Provision Storage
+  (Auto-scale)`, ID 19) instead of the plain Job Template
+- Adding `target_vm_name` to the extra_vars payload (needed by the
+  `Attach Disk` workflow node for its ESXi API calls - `target_ip` alone
+  isn't enough)
+
+**Gotcha hit along the way**: AWX rejected the launch with HTTP 400 -
+`"Variables mount_point, lv_name, lv_size are not allowed on launch.
+Check the Prompt on Launch setting on the Workflow Job Template"`.
+Workflow Templates don't accept arbitrary extra_vars at launch time by
+default, unlike plain Job Templates - **"Prompt on Launch" must be
+explicitly enabled** on the Workflow Template's Variables field for
+external callers (like this ServiceNow integration) to pass in values.
+
+**Verified end-to-end with the full auto-scale branch exercised**:
+RITM0010018, requested 25GB against a VG with less free space available,
+approved by admin, AWX Workflow Job 249 launched (HTTP 201) - correctly
+branched through Check Capacity (failed) → Attach Disk (14GB disk
+attached) → Provision Filesystem, producing a real 25GB LV spanning two
+disks, confirmed via `lsblk` on the target VM.
