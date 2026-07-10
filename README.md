@@ -181,3 +181,24 @@ exercised code paths more thoroughly:
   routed through Attach Disk (7GB disk attached, VG extended), then
   Provision Filesystem created a correct 20GB LV spanning both disks.
   Math checked out exactly (14.99 + 7 - 20 = 1.99GB free, matched)
+
+## Sprint 7 details
+
+Moved secrets out of plaintext AWX Job Template variables into proper
+AWX Credentials (encrypted at rest, automatically masked in job output).
+
+- **Custom Credential Types**: `ESXi Access` (hostname/username/password)
+  and `ServiceNow OAuth Access` (instance/username/password/client
+  ID/client secret), each with an injector mapping fields directly to
+  the extra var names the playbooks already expect - no playbook
+  changes needed
+- **Applied to**: `CMDB Sync` (both credentials) and `Attach Disk`
+  (ESXi credential)
+- **Verified**: manually launched `CMDB Sync` after removing the
+  plaintext vars - synced successfully using only the injected
+  credential values
+- **Known gap, deliberately deferred**: these are still static,
+  long-lived secrets (just encrypted instead of plaintext). Fetching
+  short-lived credentials per-run from HashiCorp Vault - including an
+  ephemeral SSH CA instead of a static SSH key - is scoped as a
+  separate project (see Project Roadmap below), not bolted onto this one
