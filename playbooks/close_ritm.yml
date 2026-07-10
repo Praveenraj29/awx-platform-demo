@@ -1,4 +1,14 @@
 ---
+# close_ritm.yml
+# Final workflow node: closes the RITM in ServiceNow once provisioning
+# has completed successfully, using the same OAuth pattern as the CMDB
+# sync playbook. ServiceNow's own notification system fires automatically
+# on this state change (no custom email logic needed).
+#
+# Required extra vars: ritm_sys_id, mount_point, lv_size, target_vm_name
+# Required credentials: snow_instance, snow_username, snow_password,
+#                        snow_client_id, snow_client_secret
+
 - name: Close the RITM after successful provisioning
   hosts: localhost
   gather_facts: false
@@ -35,8 +45,7 @@
         action: patch
         sys_id: "{{ ritm_sys_id }}"
         data:
-          state: "closed_complete"
-          stage: "complete"
+          state: "3"
           close_notes: >-
             Filesystem provisioned successfully on {{ target_vm_name | default('target VM') }}:
             {{ mount_point | default('') }} ({{ lv_size | default('') }}GB).
