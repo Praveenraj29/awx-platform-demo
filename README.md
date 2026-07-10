@@ -35,7 +35,7 @@ Two flows, one platform:
 | 6 — AWX multi-step Workflow | ✅ Done | Native AWX Workflow Visualizer: Check Capacity → branches to Attach Disk (on failure) or straight to Provision Filesystem (on success) |
 | 7 — Credentials hardening | ✅ Done | ESXi/ServiceNow secrets moved from plaintext job template vars into encrypted AWX Credentials |
 | 8 — Personas + Approval gate | ✅ Done | Developer requests → VM owner approves (native sysapproval_approver) → AWX runs |
-| 9 — Closure loop | ⬜ Pending | AWX webhook → RITM auto-closed + email notification |
+| 9 — Closure loop | ✅ Done | AWX Workflow → RITM auto-closed via ServiceNow OAuth callback, native notifications fire automatically |
 | 10 — Docs + architecture diagram + video | ⬜ Pending | README, diagram, YouTube demo recording |
 
 ## What it does today (Sprint 4 complete)
@@ -312,3 +312,51 @@ approved by admin, AWX Workflow Job 249 launched (HTTP 201) - correctly
 branched through Check Capacity (failed) → Attach Disk (14GB disk
 attached) → Provision Filesystem, producing a real 25GB LV spanning two
 disks, confirmed via `lsblk` on the target VM.
+
+## Sprint 9 details
+
+Closes the loop: once provisioning succeeds, AWX calls back into
+ServiceNow to close the RITM automatically - completing the full
+request → approve → provision → confirm cycle.
+
+- **New playbook**: `playbooks/close_ritm.yml` - reuses the exact OAuth
+  auth pattern from the CMDB sync playbook, PATCHes the RITM via
+  `servicenow.itsm.api`
+- **Business Rule update**: `Trigger AWX - On Approval` now passes
+  `ritm_sys_id` in the extra_vars payload so the workflow knows which
+  record to close
+- **Wired as the final workflow node**, converging after both
+  `Provision Filesystem` node instances (same Option B convergence
+  pattern as Sprint 6 - two separate node instances, not a true visual
+  diamond)
+- **Native ServiceNow notifications fire automatically** on the state
+  change - no custom email logic needed, confirmed via earlier system
+  log entries showing "Notification 'Request approved'" firing on
+  related state transitions
+
+### Bug found and fixed
+
+`task.state` (the base table `sc_req_item` inherits from) uses **numeric**
+choice values, not string labels - `state: "closed_complete"` silently
+succeeded (the PATCH returned OK, the playbook reported success) but the
+actual State field never changed, because that string isn't a valid
+choice value. The correct value is `state: "3"` (Closed Complete),
+confirmed via `System Definition → Choice Lists` filtered to
+`task.state`. A silent-success-but-wrong-value bug like this is worth
+remembering: PATCH returning 200 doesn't guarantee the value was
+meaningfully applied if it doesn't match the field's actual choice list.
+
+### Verified end-to-end
+
+RITM0010019: requested → approved → AWX workflow triggered → Provision
+Filesystem completed → Close RITM node ran → **State field changed from
+Open to Closed Complete**, confirmed via the record's Activity Stream
+field-change entry (not just a work note).
+
+## Full platform - verified end to end
+
+praveen requests → live CMDB VM picker (scheduled ESXi sync) → routes
+to VM owner for approval → admin approves → AWX Workflow launches →
+capacity check → conditional disk attach → filesystem provisioned →
+RITM automatically closed. Every step proven on real infrastructure,
+not simulated.
