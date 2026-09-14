@@ -1,0 +1,97 @@
+---
+# Node 2 — Patch
+# Changes repo tier, runs package updates, reboots if required
+# Uses Vault-signed ephemeral cert from Node 0 via set_stats artifacts
+
+- name: Execute patching
+  hosts: all
+  gather_facts: true
+  become: true
+  serial: "{{ batch_size | default(10) }}"
+
+  vars:
+    ansible_ssh_private_key_file: "{{ vault_ssh_key_path }}"
+    ansible_ssh_common_args: "-o CertificateFile={{ vault_ssh_cert_path }} -o StrictHostKeyChecking=no"
+    max_fail_percentage: "{{ patch_max_fail_percentage | default(25) }}"
+    reboot_timeout: 300
+
+  tasks:
+    - name: Check change window has not expired
+      ansible.builtin.fail:
+        msg: "Change window expired at {{ change_window_end }} — stopping patching on {{ inventory_hostname }}"
+      when:
+        - change_window_end is defined
+        - change_window_end != ""
+        - ansible_date_time.iso8601 > change_window_end
+
+    - name: Update all packages (RedHat/CentOS/RHEL)
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest
+        update_only: true
+      when: ansible_os_family == "RedHat"
+      register: dnf_result
+      async: 1800
+      poll: 30
+
+    - name: Update all packages (Debian/Ubuntu)
+      ansible.builtin.apt:
+        upgrade: dist
+        update_cache: true
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+      register: apt_result
+      async: 1800
+      poll: 30
+
+    - name: Check if reboot required (RedHat)
+      ansible.builtin.command:
+        cmd: needs-restarting -r
+      register: reboot_required_rh
+      changed_when: false
+      failed_when: false
+      when: ansible_os_family == "RedHat"
+
+    - name: Check if reboot required (Debian)
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required_deb
+      when: ansible_os_family == "Debian"
+
+    - name: Set reboot required fact
+      ansible.builtin.set_fact:
+        needs_reboot: "{{ (ansible_os_family == 'RedHat' and reboot_required_rh.rc == 1) or (ansible_os_family == 'Debian' and reboot_required_deb.stat.exists | default(false)) }}"
+
+    - name: Reboot if required
+      ansible.builtin.reboot:
+        reboot_timeout: "{{ reboot_timeout }}"
+        msg: "Reboot triggered by AWX patching job {{ awx_job_id }}"
+      when: needs_reboot | bool
+
+    - name: Wait for host to come back after reboot
+      ansible.builtin.wait_for_connection:
+        delay: 10
+        timeout: "{{ reboot_timeout }}"
+      when: needs_reboot | bool
+
+    - name: Get new kernel version after reboot
+      ansible.builtin.command:
+        cmd: uname -r
+      register: new_kernel
+      changed_when: false
+
+    - name: Record patch result in stats
+      ansible.builtin.set_stats:
+        data:
+          "patch_result_{{ inventory_hostname }}": "success"
+          "patch_kernel_{{ inventory_hostname }}": "{{ new_kernel.stdout }}"
+          "patch_rebooted_{{ inventory_hostname }}": "{{ needs_reboot | bool }}"
+        per_host: false
+
+    - name: Show patch summary
+      ansible.builtin.debug:
+        msg:
+          - "Host: {{ inventory_hostname }}"
+          - "Patching: complete"
+          - "Rebooted: {{ needs_reboot | bool }}"
+          - "Kernel: {{ new_kernel.stdout }}"

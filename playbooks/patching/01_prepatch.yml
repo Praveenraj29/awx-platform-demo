@@ -1,0 +1,107 @@
+---
+# Node 1 — Prepatch
+# Collects system info, checks disk space, writes pre-patch report
+# Uses Vault-signed ephemeral cert from Node 0 via set_stats artifacts
+
+- name: Pre-patch checks and system info collection
+  hosts: all
+  gather_facts: true
+  become: true
+
+  vars:
+    ansible_ssh_private_key_file: "{{ vault_ssh_key_path }}"
+    ansible_ssh_common_args: "-o CertificateFile={{ vault_ssh_cert_path }} -o StrictHostKeyChecking=no"
+    report_dir: "/tmp/patching_{{ awx_job_id }}"
+    min_disk_free_percent: 20
+
+  tasks:
+    - name: Create report directory on controller
+      ansible.builtin.file:
+        path: "{{ report_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      run_once: true
+
+    - name: Gather disk facts
+      ansible.builtin.command:
+        cmd: df -h /
+      register: disk_output
+      changed_when: false
+
+    - name: Get disk free percentage
+      ansible.builtin.set_fact:
+        disk_free_pct: "{{ 100 - (ansible_mounts | selectattr('mount', 'equalto', '/') | map(attribute='size_available') | first * 100 / (ansible_mounts | selectattr('mount', 'equalto', '/') | map(attribute='size_total') | first)) | int }}"
+
+    - name: Fail if disk space insufficient
+      ansible.builtin.fail:
+        msg: "Insufficient disk space on {{ inventory_hostname }} — {{ disk_free_pct }}% free, minimum {{ min_disk_free_percent }}% required"
+      when: disk_free_pct | int < min_disk_free_percent | int
+
+    - name: Get current kernel version
+      ansible.builtin.command:
+        cmd: uname -r
+      register: kernel_version
+      changed_when: false
+
+    - name: Get OS details
+      ansible.builtin.command:
+        cmd: cat /etc/os-release
+      register: os_release
+      changed_when: false
+
+    - name: Get list of packages to be updated
+      ansible.builtin.command:
+        cmd: "{{ 'dnf check-update --quiet' if ansible_os_family == 'RedHat' else 'apt list --upgradable 2>/dev/null' }}"
+      register: packages_to_update
+      changed_when: false
+      failed_when: false
+
+    - name: Get running services
+      ansible.builtin.command:
+        cmd: systemctl list-units --type=service --state=running --no-pager --no-legend
+      register: running_services
+      changed_when: false
+
+    - name: Write pre-patch report per host
+      ansible.builtin.copy:
+        content: |
+          ============================================================
+          PRE-PATCH REPORT
+          ============================================================
+          Host:           {{ inventory_hostname }}
+          Change Task:    {{ change_task_number }}
+          Patch Level:    {{ patch_level }}
+          Repo Version:   {{ repo_version }}
+          Change Window:  {{ change_window_end }}
+          Timestamp:      {{ ansible_date_time.iso8601 }}
+          AWX Job ID:     {{ awx_job_id }}
+          ------------------------------------------------------------
+          OS:             {{ ansible_distribution }} {{ ansible_distribution_version }}
+          Kernel:         {{ kernel_version.stdout }}
+          Disk Free:      {{ disk_free_pct }}%
+          ------------------------------------------------------------
+          PACKAGES TO UPDATE:
+          {{ packages_to_update.stdout | default('None found') }}
+          ------------------------------------------------------------
+          RUNNING SERVICES:
+          {{ running_services.stdout }}
+          ============================================================
+        dest: "{{ report_dir }}/prepatch_{{ inventory_hostname }}.txt"
+      delegate_to: localhost
+
+    - name: Show pre-patch summary
+      ansible.builtin.debug:
+        msg:
+          - "Host: {{ inventory_hostname }}"
+          - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Kernel: {{ kernel_version.stdout }}"
+          - "Disk free: {{ disk_free_pct }}%"
+          - "Packages to update: {{ packages_to_update.stdout_lines | length }}"
+
+    - name: Record pre-patch state in stats
+      ansible.builtin.set_stats:
+        data:
+          "prepatch_kernel_{{ inventory_hostname }}": "{{ kernel_version.stdout }}"
+          "prepatch_disk_{{ inventory_hostname }}": "{{ disk_free_pct }}"
+        per_host: false

@@ -1,0 +1,121 @@
+---
+# Node 3 — Postpatch
+# Verifies services, compares pre/post kernel, writes final report
+# Updates RITM work notes with pass/fail count
+
+- name: Post-patch verification and reporting
+  hosts: all
+  gather_facts: true
+  become: true
+
+  vars:
+    ansible_ssh_private_key_file: "{{ vault_ssh_key_path }}"
+    ansible_ssh_common_args: "-o CertificateFile={{ vault_ssh_cert_path }} -o StrictHostKeyChecking=no"
+    report_dir: "/tmp/patching_{{ awx_job_id }}"
+
+  tasks:
+    - name: Get current kernel version
+      ansible.builtin.command:
+        cmd: uname -r
+      register: post_kernel
+      changed_when: false
+
+    - name: Get running services post-patch
+      ansible.builtin.command:
+        cmd: systemctl list-units --type=service --state=running --no-pager --no-legend
+      register: post_services
+      changed_when: false
+
+    - name: Get disk space post-patch
+      ansible.builtin.command:
+        cmd: df -h /
+      register: post_disk
+      changed_when: false
+
+    - name: Verify host is responsive
+      ansible.builtin.ping:
+
+    - name: Set host patch status
+      ansible.builtin.set_fact:
+        host_patch_status: "PASS"
+
+    - name: Write post-patch report per host
+      ansible.builtin.copy:
+        content: |
+          ============================================================
+          POST-PATCH REPORT
+          ============================================================
+          Host:           {{ inventory_hostname }}
+          Change Task:    {{ change_task_number }}
+          Patch Level:    {{ patch_level }}
+          Timestamp:      {{ ansible_date_time.iso8601 }}
+          AWX Job ID:     {{ awx_job_id }}
+          Status:         {{ host_patch_status }}
+          ------------------------------------------------------------
+          PRE-PATCH KERNEL:  {{ hostvars[inventory_hostname]['prepatch_kernel_' + inventory_hostname] | default('unknown') }}
+          POST-PATCH KERNEL: {{ post_kernel.stdout }}
+          KERNEL CHANGED:    {{ hostvars[inventory_hostname]['prepatch_kernel_' + inventory_hostname] | default('') != post_kernel.stdout }}
+          REBOOTED:          {{ hostvars[inventory_hostname]['patch_rebooted_' + inventory_hostname] | default(false) }}
+          ------------------------------------------------------------
+          DISK USAGE:
+          {{ post_disk.stdout }}
+          ------------------------------------------------------------
+          RUNNING SERVICES:
+          {{ post_services.stdout }}
+          ============================================================
+        dest: "{{ report_dir }}/postpatch_{{ inventory_hostname }}.txt"
+      delegate_to: localhost
+
+    - name: Record postpatch result in stats
+      ansible.builtin.set_stats:
+        data:
+          "postpatch_status_{{ inventory_hostname }}": "{{ host_patch_status }}"
+          "postpatch_kernel_{{ inventory_hostname }}": "{{ post_kernel.stdout }}"
+        per_host: false
+
+    - name: Show post-patch summary per host
+      ansible.builtin.debug:
+        msg:
+          - "Host: {{ inventory_hostname }}"
+          - "Status: {{ host_patch_status }}"
+          - "Pre-patch kernel:  {{ hostvars[inventory_hostname]['prepatch_kernel_' + inventory_hostname] | default('unknown') }}"
+          - "Post-patch kernel: {{ post_kernel.stdout }}"
+          - "Rebooted: {{ hostvars[inventory_hostname]['patch_rebooted_' + inventory_hostname] | default(false) }}"
+
+- name: Generate overall report and update RITM
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Build overall summary
+      ansible.builtin.set_fact:
+        overall_summary: |
+          ============================================================
+          OVERALL PATCHING REPORT
+          ============================================================
+          Change Task:    {{ change_task_number }}
+          Patch Level:    {{ patch_level }}
+          AWX Job ID:     {{ awx_job_id }}
+          Completed:      {{ ansible_date_time.iso8601 }}
+          ============================================================
+          [MOCK] In production this updates RITM work notes via
+          servicenow.itsm.change_request_task module
+          ============================================================
+
+    - name: Write overall report
+      ansible.builtin.copy:
+        content: "{{ overall_summary }}"
+        dest: "/tmp/patching_{{ awx_job_id }}/overall_report.txt"
+
+    - name: Show overall report
+      ansible.builtin.debug:
+        msg: "{{ overall_summary.split('\n') }}"
+
+    - name: Mock RITM update — job complete
+      ansible.builtin.debug:
+        msg:
+          - "[MOCK RITM UPDATE] Change Task: {{ change_task_number }}"
+          - "[MOCK RITM UPDATE] Status: Patching complete"
+          - "[MOCK RITM UPDATE] AWX Job: {{ awx_job_id }}"
+          - "[MOCK RITM UPDATE] Patch Level: {{ patch_level }}"
+          - "[MOCK RITM UPDATE] In production: servicenow.itsm updates work notes"

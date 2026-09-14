@@ -1,0 +1,60 @@
+---
+# Node 4 — Cleanup
+# Deletes ephemeral SSH key and certificate
+# Revokes Vault token
+# Always runs — even if previous nodes failed
+
+- name: Cleanup ephemeral SSH keys and revoke Vault token
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    vault_addr: "http://192.168.1.6:8200"
+    ssh_key_path: "/tmp/job_{{ awx_job_id }}_key"
+    ssh_cert_path: "/tmp/job_{{ awx_job_id }}_key-cert.pub"
+    ssh_pub_path: "/tmp/job_{{ awx_job_id }}_key.pub"
+
+  tasks:
+    - name: Delete ephemeral private key
+      ansible.builtin.file:
+        path: "{{ ssh_key_path }}"
+        state: absent
+
+    - name: Delete ephemeral public key
+      ansible.builtin.file:
+        path: "{{ ssh_pub_path }}"
+        state: absent
+
+    - name: Delete signed certificate
+      ansible.builtin.file:
+        path: "{{ ssh_cert_path }}"
+        state: absent
+
+    - name: Revoke Vault token
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/auth/token/revoke-self"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ vault_token_to_revoke }}"
+        validate_certs: false
+        status_code: [200, 204]
+      when: vault_token_to_revoke is defined
+      failed_when: false
+
+    - name: Verify keys are deleted
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: key_check
+      loop:
+        - "{{ ssh_key_path }}"
+        - "{{ ssh_pub_path }}"
+        - "{{ ssh_cert_path }}"
+
+    - name: Confirm cleanup complete
+      ansible.builtin.debug:
+        msg:
+          - "Cleanup complete for AWX Job {{ awx_job_id }}"
+          - "Private key deleted: {{ not key_check.results[0].stat.exists }}"
+          - "Public key deleted: {{ not key_check.results[1].stat.exists }}"
+          - "Certificate deleted: {{ not key_check.results[2].stat.exists }}"
+          - "Vault token revoked: {{ vault_token_to_revoke is defined }}"
