@@ -1,0 +1,342 @@
+cat > ~/platform-demo/playbooks/patching/test_01_vault_ssh_ca.yml << 'EOF'
+---
+# Test Node 0 — Vault SSH CA
+# Vault auth + sign ephemeral key + pass paths downstream via set_stats
+# No SSH to hosts, no cleanup — those are separate nodes
+
+- name: Vault SSH CA — generate and sign ephemeral key
+  hosts: all
+  gather_facts: false
+
+  vars:
+    VAULT_ADDR: "{{ vault_addr }}"
+    VAULT_ROLE_ID: "{{ vault_role_id }}"
+    VAULT_SECRET_ID: "{{ vault_secret_id }}"
+    VAULT_NAMESPACE: "{{ vault_namespace }}"
+    ssh_key_path: "/runner/.ssh/vault_{{ awx_job_id }}_key"
+    ssh_cert_path: "/runner/.ssh/vault_{{ awx_job_id }}_key-cert.pub"
+    vault_ssh_user: "lnxawxsid"
+    app_role_path: "approle-linux-team"
+
+  tasks:
+
+    - name: Check if /home/runner exists
+      ansible.builtin.stat:
+        path: /home/runner
+      register: home_runner
+      delegate_to: localhost
+      run_once: true
+
+    - name: Symlink /home/runner to /runner
+      ansible.builtin.file:
+        src: /runner
+        dest: /home/runner
+        state: link
+      when: not home_runner.stat.exists
+      delegate_to: localhost
+      run_once: true
+
+    - name: Ensure /runner/.ssh exists
+      ansible.builtin.file:
+        path: "/runner/.ssh"
+        state: directory
+        mode: '0700'
+      delegate_to: localhost
+      run_once: true
+
+    - name: Generate ephemeral SSH keypair
+      ansible.builtin.command:
+        cmd: "ssh-keygen -t ed25519 -f {{ ssh_key_path }} -N ''"
+      delegate_to: localhost
+      run_once: true
+      changed_when: true
+
+    - name: Read public key
+      ansible.builtin.slurp:
+        src: "{{ ssh_key_path }}.pub"
+      register: pubkey_raw
+      delegate_to: localhost
+      run_once: true
+
+    - name: Decode public key
+      ansible.builtin.set_fact:
+        public_key: "{{ pubkey_raw.content | b64decode }}"
+      delegate_to: localhost
+      run_once: true
+
+    - name: Login to Vault via AppRole
+      ansible.builtin.uri:
+        url: "{{ VAULT_ADDR }}/v1/auth/{{ app_role_path }}/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ VAULT_ROLE_ID }}"
+          secret_id: "{{ VAULT_SECRET_ID }}"
+        headers:
+          X-Vault-Namespace: "{{ VAULT_NAMESPACE }}"
+        validate_certs: true
+        return_content: true
+        status_code: 200
+      register: vault_login
+      delegate_to: localhost
+      run_once: true
+      no_log: true
+      failed_when: vault_login.status != 200
+
+    - name: Fail clearly if Vault login unsuccessful
+      ansible.builtin.fail:
+        msg: >
+          Vault AppRole login failed.
+          Check sscm_linux_team_vault credential.
+          HTTP status: {{ vault_login.status }}
+      when: vault_login.json.auth is not defined
+      delegate_to: localhost
+      run_once: true
+
+    - name: Extract Vault token
+      ansible.builtin.set_fact:
+        vault_token: "{{ vault_login.json.auth.client_token }}"
+      delegate_to: localhost
+      run_once: true
+      no_log: true
+
+    - name: Sign public key via Vault SSH CA
+      ansible.builtin.uri:
+        url: "{{ VAULT_ADDR }}/v1/ssh/sign/linux-server-role"
+        method: POST
+        body_format: json
+        headers:
+          X-Vault-Token: "{{ vault_token }}"
+          X-Vault-Namespace: "{{ VAULT_NAMESPACE }}"
+        body:
+          public_key: "{{ public_key }}"
+          valid_principals: "{{ vault_ssh_user }}"
+        validate_certs: true
+        return_content: true
+        status_code: 200
+      register: signed_cert_response
+      delegate_to: localhost
+      run_once: true
+
+    - name: Fail clearly if cert signing unsuccessful
+      ansible.builtin.fail:
+        msg: >
+          Vault SSH cert signing failed.
+          Check SSH role name and valid_principals with Vault team.
+          HTTP status: {{ signed_cert_response.status }}
+      when: signed_cert_response.json.data is not defined
+      delegate_to: localhost
+      run_once: true
+
+    - name: Write signed certificate to file
+      ansible.builtin.copy:
+        content: "{{ signed_cert_response.json.data.signed_key }}"
+        dest: "{{ ssh_cert_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      run_once: true
+
+    - name: Verify certificate file exists
+      ansible.builtin.stat:
+        path: "{{ ssh_cert_path }}"
+      register: cert_file
+      delegate_to: localhost
+      run_once: true
+
+    - name: Fail if certificate file not written
+      ansible.builtin.fail:
+        msg: "SSH certificate not written to {{ ssh_cert_path }} — cannot proceed"
+      when: not cert_file.stat.exists
+      delegate_to: localhost
+      run_once: true
+
+    - name: Verify certificate details
+      ansible.builtin.command:
+        cmd: "ssh-keygen -L -f {{ ssh_cert_path }}"
+      register: cert_details
+      delegate_to: localhost
+      run_once: true
+      changed_when: false
+
+    - name: Display certificate info
+      ansible.builtin.debug:
+        msg: "{{ cert_details.stdout_lines }}"
+      delegate_to: localhost
+      run_once: true
+
+    - name: Pass key paths to downstream nodes via set_stats
+      ansible.builtin.set_stats:
+        data:
+          vault_ssh_key_path: "{{ ssh_key_path }}"
+          vault_ssh_cert_path: "{{ ssh_cert_path }}"
+          vault_token_to_revoke: "{{ vault_token }}"
+        per_host: false
+      delegate_to: localhost
+      run_once: true
+EOF
+
+cat > ~/platform-demo/playbooks/patching/test_02_ssh_checks.yml << 'EOF'
+---
+# Test Node 1 — SSH checks using Vault-signed cert
+# Uses key paths passed from Node 0 via set_stats
+# No Vault code here — cert already signed and ready
+# No sudo required
+
+- name: Run basic checks on remote hosts using Vault SSH cert
+  hosts: all
+  gather_facts: false
+  become: false
+
+  vars:
+    ansible_ssh_private_key_file: "{{ vault_ssh_key_path }}"
+    ansible_ssh_common_args: >-
+      -o CertificateFile={{ vault_ssh_cert_path }}
+      -o StrictHostKeyChecking=no
+
+  tasks:
+
+    - name: Ping host
+      ansible.builtin.ping:
+
+    - name: Get hostname
+      ansible.builtin.command:
+        cmd: hostname
+      register: host_name
+      changed_when: false
+
+    - name: Get uptime
+      ansible.builtin.command:
+        cmd: uptime
+      register: host_uptime
+      changed_when: false
+
+    - name: Get current user
+      ansible.builtin.command:
+        cmd: whoami
+      register: current_user
+      changed_when: false
+
+    - name: Get disk usage on root
+      ansible.builtin.command:
+        cmd: df -h /
+      register: disk_root
+      changed_when: false
+
+    - name: Get disk usage on all mounts
+      ansible.builtin.command:
+        cmd: df -hT
+      register: disk_all
+      changed_when: false
+
+    - name: Get memory usage
+      ansible.builtin.command:
+        cmd: free -h
+      register: memory_usage
+      changed_when: false
+
+    - name: Get OS version
+      ansible.builtin.command:
+        cmd: cat /etc/os-release
+      register: os_version
+      changed_when: false
+      failed_when: false
+
+    - name: Get kernel version
+      ansible.builtin.command:
+        cmd: uname -r
+      register: kernel_version
+      changed_when: false
+
+    - name: Get running services count
+      ansible.builtin.command:
+        cmd: systemctl list-units --type=service --state=running --no-pager --no-legend
+      register: running_services
+      changed_when: false
+
+    - name: Show all results
+      ansible.builtin.debug:
+        msg:
+          - "==============================="
+          - "HOST:     {{ host_name.stdout }}"
+          - "USER:     {{ current_user.stdout }}"
+          - "UPTIME:   {{ host_uptime.stdout }}"
+          - "KERNEL:   {{ kernel_version.stdout }}"
+          - "-------------------------------"
+          - "DISK:"
+          - "{{ disk_root.stdout_lines[0] }}"
+          - "{{ disk_root.stdout_lines[1] }}"
+          - "-------------------------------"
+          - "MEMORY:"
+          - "{{ memory_usage.stdout }}"
+          - "-------------------------------"
+          - "SSH METHOD: Vault CA signed cert"
+          - "KEY PATH:   {{ vault_ssh_key_path }}"
+          - "CERT PATH:  {{ vault_ssh_cert_path }}"
+          - "==============================="
+EOF
+
+cat > ~/platform-demo/playbooks/patching/test_03_cleanup.yml << 'EOF'
+---
+# Test Node 2 — Cleanup
+# Deletes ephemeral keys and revokes Vault token
+# Uses vault_token_to_revoke passed from Node 0 via set_stats
+# Always runs — even if Node 1 failed
+
+- name: Cleanup ephemeral keys and revoke Vault token
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    VAULT_ADDR: "{{ vault_addr }}"
+    VAULT_NAMESPACE: "{{ vault_namespace }}"
+
+  tasks:
+
+    - name: Remove ephemeral private key
+      ansible.builtin.file:
+        path: "{{ vault_ssh_key_path }}"
+        state: absent
+
+    - name: Remove ephemeral public key
+      ansible.builtin.file:
+        path: "{{ vault_ssh_key_path }}.pub"
+        state: absent
+
+    - name: Remove signed certificate
+      ansible.builtin.file:
+        path: "{{ vault_ssh_cert_path }}"
+        state: absent
+
+    - name: Revoke Vault token
+      ansible.builtin.uri:
+        url: "{{ VAULT_ADDR }}/v1/auth/token/revoke-self"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ vault_token_to_revoke | default('') }}"
+          X-Vault-Namespace: "{{ VAULT_NAMESPACE }}"
+        validate_certs: true
+        status_code: [200, 204]
+      when: vault_token_to_revoke is defined
+      failed_when: false
+
+    - name: Verify all keys deleted
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: key_check
+      loop:
+        - "{{ vault_ssh_key_path }}"
+        - "{{ vault_ssh_key_path }}.pub"
+        - "{{ vault_ssh_cert_path }}"
+
+    - name: Confirm cleanup complete
+      ansible.builtin.debug:
+        msg:
+          - "==============================="
+          - "Cleanup complete"
+          - "Private key deleted: {{ not key_check.results[0].stat.exists }}"
+          - "Public key deleted:  {{ not key_check.results[1].stat.exists }}"
+          - "Certificate deleted: {{ not key_check.results[2].stat.exists }}"
+          - "Vault token revoked: {{ vault_token_to_revoke is defined }}"
+          - "==============================="
+EOF
+
