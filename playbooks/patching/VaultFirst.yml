@@ -1,0 +1,146 @@
+
+---
+# Node 0 — Vault SSH CA (Start of workflow)
+# Based on AWX team's playbook — corrected for 5-node workflow design
+#
+# Corrections made vs original AWX team playbook:
+# 1. run_once: true on all localhost tasks (fixes race condition)
+# 2. awx_job_id in key filename (prevents concurrent job collision)
+# 3. Removed host tasks — roles handle actual work in Nodes 1-3
+# 4. Added set_stats at end — passes key paths downstream
+# 5. Added vars mapping — lowercase credential vars to uppercase
+
+- name: Vault SSH CA — generate and sign ephemeral key
+  hosts: all
+  gather_facts: false
+
+  vars:
+    # Map credential-injected vars (lowercase) to playbook vars (uppercase)
+    VAULT_ADDR: "{{ vault_addr }}"
+    VAULT_ROLE_ID: "{{ vault_role_id }}"
+    VAULT_SECRET_ID: "{{ vault_secret_id }}"
+    VAULT_NAMESPACE: "{{ vault_namespace }}"
+
+    # Playbook-specific vars
+    ssh_key_path: "/runner/.ssh/vault_{{ awx_job_id }}_key"
+    ssh_cert_path: "/runner/.ssh/vault_{{ awx_job_id }}_key-cert.pub"
+    vault_ssh_user: "lnxawxsid"
+    app_role_path: "approle-linux-team"
+
+  tasks:
+    - name: Check if /home/runner already exists
+      ansible.builtin.stat:
+        path: /home/runner
+      register: home_runner
+      delegate_to: localhost
+      run_once: true
+
+    - name: Symlink /home/runner to /runner
+      ansible.builtin.file:
+        src: /runner
+        dest: /home/runner
+        state: link
+      when: not home_runner.stat.exists
+      delegate_to: localhost
+      run_once: true
+
+    - name: Ensure /runner/.ssh directory exists
+      ansible.builtin.file:
+        path: "/runner/.ssh"
+        state: directory
+        mode: '0700'
+      delegate_to: localhost
+      run_once: true
+
+    - name: Generate ephemeral SSH private key
+      ansible.builtin.command:
+        cmd: "ssh-keygen -t ed25519 -f {{ ssh_key_path }} -N ''"
+        creates: "{{ ssh_key_path }}"
+      delegate_to: localhost
+      run_once: true
+
+    - name: Read public key
+      ansible.builtin.slurp:
+        src: "{{ ssh_key_path }}.pub"
+      register: pubkey_raw
+      delegate_to: localhost
+      run_once: true
+
+    - name: Decode public key
+      ansible.builtin.set_fact:
+        public_key: "{{ pubkey_raw.content | b64decode }}"
+      delegate_to: localhost
+      run_once: true
+
+    - name: Login to Vault using AppRole
+      ansible.builtin.uri:
+        url: "{{ VAULT_ADDR }}/v1/auth/{{ app_role_path }}/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ VAULT_ROLE_ID }}"
+          secret_id: "{{ VAULT_SECRET_ID }}"
+        headers:
+          X-Vault-Namespace: "{{ VAULT_NAMESPACE }}"
+        validate_certs: true
+        return_content: true
+      register: vault_login
+      delegate_to: localhost
+      run_once: true
+      no_log: true
+
+    - name: Extract Vault token
+      ansible.builtin.set_fact:
+        vault_token: "{{ vault_login.json.auth.client_token }}"
+      delegate_to: localhost
+      run_once: true
+      no_log: true
+
+    - name: Request SSH certificate from Vault
+      ansible.builtin.uri:
+        url: "{{ VAULT_ADDR }}/v1/ssh/sign/linux-server-role"
+        method: POST
+        body_format: json
+        headers:
+          X-Vault-Token: "{{ vault_token }}"
+          X-Vault-Namespace: "{{ VAULT_NAMESPACE }}"
+        body:
+          public_key: "{{ public_key }}"
+          valid_principals: "{{ vault_ssh_user }}"
+        validate_certs: true
+        return_content: true
+      register: signed_cert_response
+      delegate_to: localhost
+      run_once: true
+
+    - name: Write signed certificate to file
+      ansible.builtin.copy:
+        content: "{{ signed_cert_response.json.data.signed_key }}"
+        dest: "{{ ssh_cert_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      run_once: true
+
+    - name: Verify certificate details
+      ansible.builtin.command:
+        cmd: "ssh-keygen -L -f {{ ssh_cert_path }}"
+      register: cert_details
+      delegate_to: localhost
+      run_once: true
+      changed_when: false
+
+    - name: Display certificate info
+      ansible.builtin.debug:
+        msg: "{{ cert_details.stdout_lines }}"
+      delegate_to: localhost
+      run_once: true
+
+    - name: Pass key paths to downstream nodes via set_stats
+      ansible.builtin.set_stats:
+        data:
+          vault_ssh_key_path: "{{ ssh_key_path }}"
+          vault_ssh_cert_path: "{{ ssh_cert_path }}"
+          vault_token_to_revoke: "{{ vault_token }}"
+        per_host: false
+      delegate_to: localhost
+      run_once: true
