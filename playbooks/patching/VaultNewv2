@@ -1,61 +1,25 @@
 ---
-# Node 0 — Vault SSH CA (Start of workflow)
-# Based on AWX team's playbook — corrected for 5-node workflow design
-#
-# Corrections vs original AWX team playbook:
-# 1. run_once: true on all localhost tasks        — fixes race condition
-# 2. delegate_to: localhost on ALL localhost tasks — fixes execution location
-# 3. awx_job_id in key filename                  — prevents concurrent job collision
-# 4. Removed host tasks                           — roles handle work in Nodes 1-3
-# 5. Added set_stats at end                       — passes key paths downstream
-# 6. Added vars mapping                           — lowercase credential to uppercase
-# 7. Added error handling on Vault login          — clear failure messages
-# 8. Added error handling on cert signing         — clear failure messages
-# 9. Added cert file existence check              — validates write succeeded
-# 10. Removed redundant creates: on ssh-keygen   — run_once handles idempotency
-# 11. Added changed_when on ssh-keygen           — correct change reporting
-# 12. Token in set_stats noted as known limit    — 1h TTL, limited policy
+# Test Node 0 — Vault SSH CA
+# Vault auth + sign ephemeral key + pass paths downstream via set_stats
+# No SSH to hosts, no cleanup — those are separate nodes
+# Key passed as base64 to preserve format across EE containers
 
 - name: Vault SSH CA — generate and sign ephemeral key
-  hosts: all
+  hosts: localhost
   gather_facts: false
 
   vars:
-    # Map credential-injected vars (lowercase) to playbook vars (uppercase)
     VAULT_ADDR: "{{ vault_addr }}"
     VAULT_ROLE_ID: "{{ vault_role_id }}"
     VAULT_SECRET_ID: "{{ vault_secret_id }}"
     VAULT_NAMESPACE: "{{ vault_namespace }}"
-
-    # Playbook-specific vars
-    ssh_key_path: "/runner/.ssh/vault_{{ awx_job_id }}_key"
-    ssh_cert_path: "/runner/.ssh/vault_{{ awx_job_id }}_key-cert.pub"
+    ssh_key_path: "/runner/.ssh/vault_temp_key"
+    ssh_cert_path: "/runner/.ssh/vault_temp_key-cert.pub"
     vault_ssh_user: "lnxawxsid"
     app_role_path: "approle-linux-team"
 
   tasks:
-
-    ##################################################
-    # 1. Prepare controller SSH directory
-    ##################################################
-
-    - name: Check if /home/runner already exists
-      ansible.builtin.stat:
-        path: /home/runner
-      register: home_runner
-      delegate_to: localhost
-      run_once: true
-
-    - name: Symlink /home/runner to /runner
-      ansible.builtin.file:
-        src: /runner
-        dest: /home/runner
-        state: link
-      when: not home_runner.stat.exists
-      delegate_to: localhost
-      run_once: true
-
-    - name: Ensure /runner/.ssh directory exists
+    - name: Ensure /runner/.ssh exists
       ansible.builtin.file:
         path: "/runner/.ssh"
         state: directory
@@ -63,11 +27,7 @@
       delegate_to: localhost
       run_once: true
 
-    ##################################################
-    # 2. Generate ephemeral keypair
-    ##################################################
-
-    - name: Generate ephemeral SSH private key
+    - name: Generate ephemeral SSH keypair
       ansible.builtin.command:
         cmd: "ssh-keygen -t ed25519 -f {{ ssh_key_path }} -N ''"
       delegate_to: localhost
@@ -87,11 +47,7 @@
       delegate_to: localhost
       run_once: true
 
-    ##################################################
-    # 3. Authenticate to Vault via AppRole
-    ##################################################
-
-    - name: Login to Vault using AppRole
+    - name: Login to Vault via AppRole
       ansible.builtin.uri:
         url: "{{ VAULT_ADDR }}/v1/auth/{{ app_role_path }}/login"
         method: POST
@@ -112,11 +68,7 @@
 
     - name: Fail clearly if Vault login unsuccessful
       ansible.builtin.fail:
-        msg: >
-          Vault AppRole login failed.
-          Check VAULT_ADDR, VAULT_ROLE_ID, VAULT_SECRET_ID
-          and VAULT_NAMESPACE in sscm_linux_team_vault credential.
-          HTTP status: {{ vault_login.status }}
+        msg: "Vault AppRole login failed. Check sscm_linux_team_vault credential. HTTP status: {{ vault_login.status }}"
       when: vault_login.json.auth is not defined
       delegate_to: localhost
       run_once: true
@@ -128,11 +80,7 @@
       run_once: true
       no_log: true
 
-    ##################################################
-    # 4. Sign public key via Vault SSH CA
-    ##################################################
-
-    - name: Request SSH certificate from Vault
+    - name: Sign public key via Vault SSH CA
       ansible.builtin.uri:
         url: "{{ VAULT_ADDR }}/v1/ssh/sign/linux-server-role"
         method: POST
@@ -143,6 +91,9 @@
         body:
           public_key: "{{ public_key }}"
           valid_principals: "{{ vault_ssh_user }}"
+          extensions:
+            permit-pty: ""
+            permit-port-forwarding: ""
         validate_certs: true
         return_content: true
         status_code: 200
@@ -150,13 +101,9 @@
       delegate_to: localhost
       run_once: true
 
-    - name: Fail clearly if certificate signing unsuccessful
+    - name: Fail clearly if cert signing unsuccessful
       ansible.builtin.fail:
-        msg: >
-          Vault SSH certificate signing failed.
-          Check SSH role name (linux-server-role) and
-          valid_principals ({{ vault_ssh_user }}) with Vault team.
-          HTTP status: {{ signed_cert_response.status }}
+        msg: "Vault SSH cert signing failed. Check SSH role name and valid_principals with Vault team. HTTP status: {{ signed_cert_response.status }}"
       when: signed_cert_response.json.data is not defined
       delegate_to: localhost
       run_once: true
@@ -169,10 +116,6 @@
       delegate_to: localhost
       run_once: true
 
-    ##################################################
-    # 5. Verify certificate was written correctly
-    ##################################################
-
     - name: Verify certificate file exists
       ansible.builtin.stat:
         path: "{{ ssh_cert_path }}"
@@ -180,9 +123,9 @@
       delegate_to: localhost
       run_once: true
 
-    - name: Fail if certificate file was not written
+    - name: Fail if certificate file not written
       ansible.builtin.fail:
-        msg: "SSH certificate was not written to {{ ssh_cert_path }} — cannot proceed"
+        msg: "SSH certificate not written to {{ ssh_cert_path }} — cannot proceed"
       when: not cert_file.stat.exists
       delegate_to: localhost
       run_once: true
@@ -201,18 +144,258 @@
       delegate_to: localhost
       run_once: true
 
-    ##################################################
-    # 6. Pass key paths to downstream nodes
-    ##################################################
+    - name: Read private key as base64 for set_stats
+      ansible.builtin.slurp:
+        src: "{{ ssh_key_path }}"
+      register: ssh_key_raw
+      delegate_to: localhost
+      run_once: true
 
-    - name: Pass key paths to downstream nodes via set_stats
+    - name: Pass key paths and content to downstream nodes via set_stats
       ansible.builtin.set_stats:
         data:
           vault_ssh_key_path: "{{ ssh_key_path }}"
           vault_ssh_cert_path: "{{ ssh_cert_path }}"
-          # vault_token_to_revoke visible in AWX artifacts
-          # Acceptable — 1h TTL, awx-policy limits to sign + read CA only
+          vault_ssh_key_b64: "{{ ssh_key_raw.content }}"
+          vault_ssh_cert_content: "{{ signed_cert_response.json.data.signed_key }}"
           vault_token_to_revoke: "{{ vault_token }}"
         per_host: false
       delegate_to: localhost
       run_once: true
+
+
+
+
+---
+# Test Node 1 — SSH checks using Vault-signed cert
+# Play 1: Reconstruct key files from set_stats content (EE isolation fix)
+#         Private key decoded from base64 to preserve exact format
+# Play 2: Run checks on remote hosts using reconstructed cert
+
+- name: Reconstruct SSH key files from set_stats content
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Ensure /runner/.ssh exists
+      ansible.builtin.file:
+        path: "/runner/.ssh"
+        state: directory
+        mode: '0700'
+
+    - name: Write private key from set_stats base64 content
+      ansible.builtin.copy:
+        content: "{{ vault_ssh_key_b64 | b64decode }}"
+        dest: "{{ vault_ssh_key_path }}"
+        mode: '0600'
+
+    - name: Write signed certificate from set_stats content
+      ansible.builtin.copy:
+        content: "{{ vault_ssh_cert_content }}"
+        dest: "{{ vault_ssh_cert_path }}"
+        mode: '0644'
+
+    - name: Verify key file exists
+      ansible.builtin.stat:
+        path: "{{ vault_ssh_key_path }}"
+      register: key_stat
+
+    - name: Fail if key file not written
+      ansible.builtin.fail:
+        msg: "SSH private key not written to {{ vault_ssh_key_path }}"
+      when: not key_stat.stat.exists
+
+    - name: Check key and cert file permissions
+      ansible.builtin.command:
+        cmd: "ls -la {{ vault_ssh_key_path }} {{ vault_ssh_cert_path }}"
+      register: key_perms
+      changed_when: false
+      failed_when: false
+
+    - name: Show key file details
+      ansible.builtin.debug:
+        msg: "{{ key_perms.stdout_lines }}"
+
+    - name: Verify certificate content
+      ansible.builtin.command:
+        cmd: "ssh-keygen -L -f {{ vault_ssh_cert_path }}"
+      register: cert_info
+      changed_when: false
+      failed_when: false
+
+    - name: Show certificate details
+      ansible.builtin.debug:
+        msg: "{{ cert_info.stdout_lines }}"
+
+    - name: Show resolved variable paths
+      ansible.builtin.debug:
+        msg:
+          - "KEY PATH:  {{ vault_ssh_key_path }}"
+          - "CERT PATH: {{ vault_ssh_cert_path }}"
+
+- name: Run basic checks on remote hosts using Vault SSH cert
+  hosts: all
+  gather_facts: false
+  become: false
+
+  vars:
+    ansible_user: lnxawxsid
+    ansible_ssh_private_key_file: "{{ vault_ssh_key_path }}"
+    ansible_ssh_common_args: "-o CertificateFile={{ vault_ssh_cert_path }} -o StrictHostKeyChecking=no -o LogLevel=DEBUG3"
+
+  tasks:
+    - name: Ping host
+      ansible.builtin.ping:
+
+    - name: Get hostname
+      ansible.builtin.command:
+        cmd: hostname
+      register: host_name
+      changed_when: false
+
+    - name: Get uptime
+      ansible.builtin.command:
+        cmd: uptime
+      register: host_uptime
+      changed_when: false
+
+    - name: Get current user
+      ansible.builtin.command:
+        cmd: whoami
+      register: current_user
+      changed_when: false
+
+    - name: Get disk usage on root
+      ansible.builtin.command:
+        cmd: df -h /
+      register: disk_root
+      changed_when: false
+
+    - name: Get disk usage on all mounts
+      ansible.builtin.command:
+        cmd: df -hT
+      register: disk_all
+      changed_when: false
+
+    - name: Get memory usage
+      ansible.builtin.command:
+        cmd: free -h
+      register: memory_usage
+      changed_when: false
+
+    - name: Get kernel version
+      ansible.builtin.command:
+        cmd: uname -r
+      register: kernel_version
+      changed_when: false
+
+    - name: Show all results
+      ansible.builtin.debug:
+        msg:
+          - "==============================="
+          - "HOST:     {{ host_name.stdout }}"
+          - "USER:     {{ current_user.stdout }}"
+          - "UPTIME:   {{ host_uptime.stdout }}"
+          - "KERNEL:   {{ kernel_version.stdout }}"
+          - "-------------------------------"
+          - "DISK:"
+          - "{{ disk_root.stdout_lines[0] }}"
+          - "{{ disk_root.stdout_lines[1] }}"
+          - "-------------------------------"
+          - "MEMORY:"
+          - "{{ memory_usage.stdout }}"
+          - "-------------------------------"
+          - "SSH METHOD: Vault CA signed cert"
+          - "KEY PATH:   {{ vault_ssh_key_path }}"
+          - "CERT PATH:  {{ vault_ssh_cert_path }}"
+          - "==============================="
+
+
+
+
+---
+# Test Node 2 — Cleanup
+# Play 1: Reconstruct key files so they can be deleted
+# Play 2: Delete keys and revoke Vault token
+# Always runs — even if Node 1 failed
+
+- name: Reconstruct SSH key files for cleanup
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Ensure /runner/.ssh exists
+      ansible.builtin.file:
+        path: "/runner/.ssh"
+        state: directory
+        mode: '0700'
+
+    - name: Write private key for deletion
+      ansible.builtin.copy:
+        content: "{{ vault_ssh_key_b64 | b64decode }}"
+        dest: "{{ vault_ssh_key_path }}"
+        mode: '0600'
+      when: vault_ssh_key_b64 is defined
+
+    - name: Write certificate for deletion
+      ansible.builtin.copy:
+        content: "{{ vault_ssh_cert_content }}"
+        dest: "{{ vault_ssh_cert_path }}"
+        mode: '0644'
+      when: vault_ssh_cert_content is defined
+
+- name: Cleanup ephemeral keys and revoke Vault token
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    VAULT_ADDR: "{{ vault_addr }}"
+    VAULT_NAMESPACE: "{{ vault_namespace }}"
+
+  tasks:
+    - name: Remove ephemeral private key
+      ansible.builtin.file:
+        path: "{{ vault_ssh_key_path }}"
+        state: absent
+
+    - name: Remove ephemeral public key
+      ansible.builtin.file:
+        path: "{{ vault_ssh_key_path }}.pub"
+        state: absent
+
+    - name: Remove signed certificate
+      ansible.builtin.file:
+        path: "{{ vault_ssh_cert_path }}"
+        state: absent
+
+    - name: Revoke Vault token
+      ansible.builtin.uri:
+        url: "{{ VAULT_ADDR }}/v1/auth/token/revoke-self"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ vault_token_to_revoke | default('') }}"
+          X-Vault-Namespace: "{{ VAULT_NAMESPACE }}"
+        validate_certs: true
+        status_code: [200, 204]
+      when: vault_token_to_revoke is defined
+      failed_when: false
+
+    - name: Verify all keys deleted
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: key_check
+      loop:
+        - "{{ vault_ssh_key_path }}"
+        - "{{ vault_ssh_key_path }}.pub"
+        - "{{ vault_ssh_cert_path }}"
+
+    - name: Confirm cleanup complete
+      ansible.builtin.debug:
+        msg:
+          - "==============================="
+          - "Cleanup complete"
+          - "Private key deleted: {{ not key_check.results[0].stat.exists }}"
+          - "Public key deleted:  {{ not key_check.results[1].stat.exists }}"
+          - "Certificate deleted: {{ not key_check.results[2].stat.exists }}"
+          - "Vault token revoked: {{ vault_token_to_revoke is defined }}"
+          - "==============================="
