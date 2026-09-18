@@ -1,0 +1,182 @@
+---
+# Prepatch main playbook — adapted for AWX Workflow Template
+#
+# Changes from original:
+# 1. Play 0 added — reconstruct SSH key from set_stats b64 (EE isolation fix)
+# 2. vars_prompt removed — survey provides ritm_number and email_addresses
+# 3. Vault SSH vars added — uses ephemeral cert from Node 0 via set_stats
+# 4. serial=100 and max_fail_percentage=25 added for scale
+# 5. block/rescue added for graceful per-host failure
+# 6. template src fixed — relative to playbook location (patching/templates/)
+# 7. report dest fixed — /tmp/ with ritm_number for uniqueness
+# 8. patch_version mapped — bimonthly/monthly/weekly → 1/2/3 for role
+#
+# [LATER Phase 2] Replace email task with servicenow.itsm RITM update
+
+##################################################
+# Play 0 — Reconstruct SSH key from set_stats b64
+# Fixes EE container isolation between workflow nodes
+##################################################
+
+- name: Reconstruct SSH key files from set_stats content
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Ensure /runner/.ssh exists
+      ansible.builtin.file:
+        path: "/runner/.ssh"
+        state: directory
+        mode: '0700'
+
+    - name: Write private key from set_stats base64 content
+      ansible.builtin.copy:
+        content: "{{ vault_ssh_key_b64 | b64decode }}"
+        dest: "{{ vault_ssh_key_path }}"
+        mode: '0600'
+
+    - name: Write signed certificate from set_stats content
+      ansible.builtin.copy:
+        content: "{{ vault_ssh_cert_content }}"
+        dest: "{{ vault_ssh_cert_path }}"
+        mode: '0644'
+
+    - name: Verify key file exists
+      ansible.builtin.stat:
+        path: "{{ vault_ssh_key_path }}"
+      register: key_stat
+
+    - name: Fail if key file not written
+      ansible.builtin.fail:
+        msg: "SSH private key not written to {{ vault_ssh_key_path }} — cannot proceed"
+      when: not key_stat.stat.exists
+
+    - name: Show survey variables received
+      ansible.builtin.debug:
+        msg:
+          - "RITM Number:   {{ ritm_number | default('NOT SET') }}"
+          - "Patch Version: {{ patch_version | default('NOT SET') }}"
+          - "Patch Level:   {{ patch_level | default('NOT SET') }}"
+          - "Email:         {{ email_addresses | default('NOT SET') }}"
+
+##################################################
+# Play 1 — Run prepatchingrole on all hosts
+##################################################
+
+- name: Run prepatch role
+  hosts: all
+  gather_facts: yes
+  become: yes
+  serial: 100
+  max_fail_percentage: 25
+
+  vars:
+    ansible_user: lnxawxsid
+    ansible_ssh_private_key_file: "{{ vault_ssh_key_path }}"
+    ansible_ssh_common_args: "-o CertificateFile={{ vault_ssh_cert_path }} -o StrictHostKeyChecking=no"
+    patch_version_map:
+      bimonthly: "1"
+      monthly: "2"
+      weekly: "3"
+    user_repo_version: "{{ patch_version_map[patch_version] | default('1') }}"
+
+  tasks:
+    - name: Run prepatchingrole with block/rescue
+      block:
+        - name: Include prepatchingrole
+          ansible.builtin.include_role:
+            name: prepatchingrole
+
+      rescue:
+        - name: Log failure for this host
+          ansible.builtin.debug:
+            msg:
+              - "PREPATCH FAILED on {{ inventory_hostname }}"
+              - "Error: {{ ansible_failed_result.msg | default('Unknown error') }}"
+
+        - name: Set minimal fact for failed host
+          ansible.builtin.set_fact:
+            pre_checks_minimal: >-
+              Hostname: {{ ansible_hostname | default(inventory_hostname) }},
+              IP: {{ ansible_default_ipv4.address | default('N/A') }},
+              Status: PREPATCH FAILED,
+              Error: {{ ansible_failed_result.msg | default('Unknown error') }}
+
+##################################################
+# Play 2 — Generate combined reports and email
+# Runs on localhost — aggregates all hostvars
+##################################################
+
+- name: Create combined reports and email
+  hosts: localhost
+  gather_facts: yes
+
+  vars:
+    minimal_report_file: "/tmp/pre-combined_minimal_report_{{ ritm_number }}.txt"
+    full_report_file: "/tmp/pre-combined_full_report_{{ ritm_number }}.txt"
+    email_list: >-
+      {{
+        (((email_addresses | default('')) | trim) == '')
+        | ternary(
+            [],
+            (email_addresses.split(',') | map('trim') | reject('equalto','') | list)
+          )
+      }}
+
+  tasks:
+    - name: Create combined MINIMAL report
+      ansible.builtin.template:
+        src: "templates/pre-checks_minimal_local.j2"
+        dest: "{{ minimal_report_file }}"
+        mode: "0644"
+
+    - name: Create combined FULL report
+      ansible.builtin.template:
+        src: "templates/pre-checks_remote.j2"
+        dest: "{{ full_report_file }}"
+        mode: "0644"
+
+    - name: Display minimal report in AWX output
+      ansible.builtin.command:
+        cmd: "cat {{ minimal_report_file }}"
+      register: minimal_report_content
+      changed_when: false
+
+    - name: Show minimal report
+      ansible.builtin.debug:
+        msg: "{{ minimal_report_content.stdout_lines }}"
+
+    - name: Fail if no valid email addresses provided
+      ansible.builtin.fail:
+        msg: "No valid email addresses provided — check email_addresses survey variable"
+      when: email_list | length == 0
+
+    - name: Send email with minimal report attached
+      community.general.mail:
+        subject: "Prechecks - {{ ritm_number }} - {{ patch_level }}"
+        body: |
+          Hi,
+
+          Please find attached the pre-patch report for: {{ ritm_number }}
+
+          Patch Version : {{ patch_version }}
+          Patch Level   : {{ patch_level }}
+
+          Thanks
+        from: home.sys-linux-mx-noreply.699i00@statefarm.com
+        to: "{{ email_list }}"
+        attach:
+          - "{{ minimal_report_file }}"
+
+    # [LATER Phase 2] Replace email task with RITM update:
+    # - name: Update RITM work notes with prepatch report
+    #   servicenow.itsm.change_request_task:
+    #     instance:
+    #       host: "{{ snow_instance }}"
+    #       username: "{{ snow_username }}"
+    #       password: "{{ snow_password }}"
+    #     number: "{{ ritm_number }}"
+    #     other:
+    #       work_notes: "{{ lookup('file', minimal_report_file) }}"
+    #   delegate_to: localhost
+    #   run_once: true
